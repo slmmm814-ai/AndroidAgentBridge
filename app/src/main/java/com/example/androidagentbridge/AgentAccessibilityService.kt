@@ -1,0 +1,76 @@
+package com.example.androidagentbridge
+
+import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.graphics.Path
+import android.graphics.Rect
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.nio.charset.Charset
+
+class AgentAccessibilityService : AccessibilityService() {
+    private val handler = Handler(Looper.getMainLooper())
+    private val uiFile = File("/sdcard/ui_state.json")
+    private val commandFile = File("/sdcard/agent_command.json")
+    private val resultFile = File("/sdcard/agent_result.json")
+    private var lastCommand = ""
+    private val poller = object : Runnable {
+        override fun run() {
+            try {
+                if (commandFile.exists()) {
+                    val raw = commandFile.readText(Charset.forName("UTF-8")).trim()
+                    if (raw.isNotEmpty() && raw != lastCommand) { lastCommand=raw; executeCommand(JSONObject(raw)); commandFile.delete() }
+                }
+            } catch (e: Exception) { writeResult(false, e.message ?: "error"); try { commandFile.delete() } catch (_: Exception) {} }
+            handler.postDelayed(this, 300)
+        }
+    }
+    override fun onServiceConnected() { super.onServiceConnected(); handler.post(poller); dumpUi() }
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) { if (event != null) dumpUi() }
+    override fun onInterrupt() {}
+    override fun onDestroy() { handler.removeCallbacks(poller); super.onDestroy() }
+
+    private fun dumpUi() {
+        val root = rootInActiveWindow ?: return
+        val out=JSONObject().put("timestamp",System.currentTimeMillis()).put("package",root.packageName?.toString() ?: "")
+        val nodes=JSONArray(); walk(root,nodes); out.put("elements",nodes)
+        try { uiFile.writeText(out.toString(2),Charset.forName("UTF-8")) } catch (_:Exception) {}
+        root.recycle()
+    }
+    private fun walk(node: AccessibilityNodeInfo,out:JSONArray) {
+        val r=Rect(); node.getBoundsInScreen(r)
+        val item=JSONObject().put("id",out.length()).put("text",node.text?.toString() ?: "").put("content_desc",node.contentDescription?.toString() ?: "").put("resource_id",node.viewIdResourceName ?: "").put("class",node.className?.toString() ?: "").put("package",node.packageName?.toString() ?: "").put("clickable",node.isClickable).put("scrollable",node.isScrollable).put("enabled",node.isEnabled).put("focused",node.isFocused).put("bounds",JSONArray().put(r.left).put(r.top).put(r.right).put(r.bottom)); out.put(item)
+        for(i in 0 until node.childCount){ node.getChild(i)?.let{ child -> walk(child,out); child.recycle() } }
+    }
+
+    private fun executeCommand(cmd: JSONObject) {
+        when(cmd.optString("action")) {
+            "dump" -> { dumpUi(); writeResult(true,"dump") }
+            "tap" -> {
+                val id=cmd.optInt("element_id",-1); val node=if(id>=0) findByIndex(id) else null
+                val ok=if(node!=null && node.isClickable) node.performAction(AccessibilityNodeInfo.ACTION_CLICK) else tap(cmd.optFloat("x",-1f),cmd.optFloat("y",-1f))
+                node?.recycle(); writeResult(ok,"tap")
+            }
+            "swipe" -> writeResult(swipe(cmd.optFloat("x1"),cmd.optFloat("y1"),cmd.optFloat("x2"),cmd.optFloat("y2"),cmd.optLong("duration_ms",400)),"swipe")
+            "type" -> {
+                val node=findByIndex(cmd.optInt("element_id",-1)); val ok=node?.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,Bundle().apply{putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,cmd.optString("text"))}) ?: false
+                node?.recycle(); writeResult(ok,"type")
+            }
+            "back" -> writeResult(performGlobalAction(GLOBAL_ACTION_BACK),"back")
+            "home" -> writeResult(performGlobalAction(GLOBAL_ACTION_HOME),"home")
+            else -> writeResult(false,"unknown action")
+        }
+        handler.postDelayed({dumpUi()},250)
+    }
+    private fun findByIndex(target:Int):AccessibilityNodeInfo? { val root=rootInActiveWindow ?: return null; val c=intArrayOf(0); val f=findRecursive(root,target,c); root.recycle(); return f }
+    private fun findRecursive(n:AccessibilityNodeInfo,target:Int,c:IntArray):AccessibilityNodeInfo? { if(c[0]==target)return AccessibilityNodeInfo.obtain(n); c[0]++; for(i in 0 until n.childCount){val ch=n.getChild(i)?:continue; val f=findRecursive(ch,target,c); ch.recycle(); if(f!=null)return f}; return null }
+    private fun tap(x:Float,y:Float):Boolean { if(x<0||y<0)return false; val p=Path().apply{moveTo(x,y)}; return dispatchGesture(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p,0,60)).build(),null,null) }
+    private fun swipe(x1:Float,y1:Float,x2:Float,y2:Float,d:Long):Boolean { val p=Path().apply{moveTo(x1,y1);lineTo(x2,y2)}; return dispatchGesture(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p,0,d.coerceIn(50,5000))).build(),null,null) }
+    private fun writeResult(ok:Boolean,msg:String){try{resultFile.writeText(JSONObject().put("ok",ok).put("message",msg).put("timestamp",System.currentTimeMillis()).toString(2),Charset.forName("UTF-8"))}catch(_:Exception){}}
+}
