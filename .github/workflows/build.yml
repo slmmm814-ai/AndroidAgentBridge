@@ -23,7 +23,7 @@ jobs:
       - name: Generate gradlew if missing
         run: |
           if [ ! -f gradlew ]; then
-            gradle wrapper --gradle-version 8.9
+            gradle wrapper --gradle-version 9.6
             chmod +x gradlew
           fi
 
