@@ -54,10 +54,10 @@ class AgentAccessibilityService : AccessibilityService() {
             "dump" -> { dumpUi(); writeResult(true,"dump") }
             "tap" -> {
                 val id=cmd.optInt("element_id",-1); val node=if(id>=0) findByIndex(id) else null
-                val ok=if(node!=null && node.isClickable) node.performAction(AccessibilityNodeInfo.ACTION_CLICK) else tap(cmd.optFloat("x",-1f),cmd.optFloat("y",-1f))
+                val ok=if(node!=null && node.isClickable) node.performAction(AccessibilityNodeInfo.ACTION_CLICK) else tap(cmd.optDouble("x",-1.0).toFloat(),cmd.optDouble("y",-1.0).toFloat())
                 node?.recycle(); writeResult(ok,"tap")
             }
-            "swipe" -> writeResult(swipe(cmd.optFloat("x1"),cmd.optFloat("y1"),cmd.optFloat("x2"),cmd.optFloat("y2"),cmd.optLong("duration_ms",400)),"swipe")
+            "swipe" -> writeResult(swipe(cmd.optDouble("x1").toFloat(),cmd.optDouble("y1").toFloat(),cmd.optDouble("x2").toFloat(),cmd.optDouble("y2").toFloat(),cmd.optLong("duration_ms",400)),"swipe")
             "type" -> {
                 val node=findByIndex(cmd.optInt("element_id",-1)); val ok=node?.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,Bundle().apply{putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,cmd.optString("text"))}) ?: false
                 node?.recycle(); writeResult(ok,"type")
