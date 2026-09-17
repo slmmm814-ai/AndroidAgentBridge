@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">Android Agent Bridge</string>
-    <string name="service_description">Reads the visible UI tree and executes commands for the user's automation agent.</string>
+    <string name="service_description">Reads the visible UI tree and executes commands for the automation agent for this device.</string>
 </resources>
