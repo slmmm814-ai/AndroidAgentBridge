@@ -43,17 +43,38 @@ class AgentAccessibilityService : AccessibilityService() {
             handler.postDelayed(this, 300)
         }
     }
+        private val dumpRunnable = Runnable {
+        dumpUi()
+    }
+
     override fun onServiceConnected() { super.onServiceConnected(); handler.post(poller); dumpUi() }
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) { if (event != null) dumpUi() }
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null) return
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
+            AccessibilityEvent.TYPE_VIEW_CLICKED,
+            AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
+                handler.removeCallbacks(dumpRunnable)
+                handler.postDelayed(dumpRunnable, 150)
+            }
+        }
+    }
     override fun onInterrupt() {}
     override fun onDestroy() { handler.removeCallbacks(poller); super.onDestroy() }
 
     private fun dumpUi() {
-        val root = rootInActiveWindow ?: return
-        val out=JSONObject().put("timestamp",System.currentTimeMillis()).put("package",root.packageName?.toString() ?: "")
-        val nodes=JSONArray(); walk(root,nodes); out.put("elements",nodes)
-        try { uiFile.writeText(out.toString(2),Charset.forName("UTF-8")) } catch (_:Exception) {}
-        root.recycle()
+        try {
+            val root = rootInActiveWindow ?: return
+            val packageName = root.packageName?.toString() ?: ""
+            val out = JSONObject().put("timestamp", System.currentTimeMillis()).put("package", packageName)
+            val nodes = JSONArray()
+            walk(root, nodes)
+            out.put("elements", nodes)
+            uiFile.writeText(out.toString(2), Charset.forName("UTF-8"))
+            root.recycle()
+        } catch (_: Exception) {}
     }
     private fun walk(node: AccessibilityNodeInfo,out:JSONArray) {
         val r=Rect(); node.getBoundsInScreen(r)
