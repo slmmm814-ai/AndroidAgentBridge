@@ -62,8 +62,15 @@ class AgentAccessibilityService : AccessibilityService() {
 
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                try {
+                    File("/sdcard/window_timing.log").appendText(
+                        "EVENT time=${System.currentTimeMillis()} package=$eventPackage\n",
+                        Charset.forName("UTF-8")
+                    )
+                } catch (_: Exception) {}
                 handler.removeCallbacks(dumpRunnable)
-                dumpUi(eventPackage)
+                val eventPackageCopy = eventPackage
+                dumpUi(eventPackageCopy)
             }
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
@@ -80,6 +87,10 @@ class AgentAccessibilityService : AccessibilityService() {
 
     private fun dumpUi(preferredPackage: String = "") {
         try {
+            File("/sdcard/window_timing.log").appendText(
+                "DUMP time=${System.currentTimeMillis()} preferred=$preferredPackage\n",
+                Charset.forName("UTF-8")
+            )
             File("/sdcard/accessibility_windows.log").writeText(
                 windows.joinToString("\n") { window ->
                     try {
@@ -92,6 +103,22 @@ class AgentAccessibilityService : AccessibilityService() {
                 },
                 Charset.forName("UTF-8")
             )
+            try {
+                File("/sdcard/window_timing.log").appendText(
+                    "WINDOWS time=${System.currentTimeMillis()} " +
+                    windows.joinToString(" | ") { window ->
+                        try {
+                            val root = window.root
+                            val pkg = root?.packageName?.toString() ?: ""
+                            "id=${window.id},focused=${window.isFocused},active=${window.isActive},package=$pkg"
+                        } catch (e: Exception) {
+                            "ERROR=${e.message}"
+                        }
+                    } + "\n",
+                    Charset.forName("UTF-8")
+                )
+            } catch (_: Exception) {}
+
             var selectedRoot: AccessibilityNodeInfo? = null
 
             if (preferredPackage.isNotEmpty()) {
