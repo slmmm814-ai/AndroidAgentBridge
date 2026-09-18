@@ -29,16 +29,13 @@ class AgentAccessibilityService : AccessibilityService() {
                 if (commandFile.exists()) {
                     val raw = try {
                         commandFile.readText(Charset.forName("UTF-8")).trim()
-                    } catch (_: Exception) {
-                        ""
-                    }
+                    } catch (_: Exception) { "" }
                     if (raw.isNotEmpty()) {
                         try {
                             val command = JSONObject(raw)
                             executeCommand(command)
                             try { commandFile.delete() } catch (_: Exception) {}
-                        } catch (_: org.json.JSONException) {
-                        }
+                        } catch (_: org.json.JSONException) {}
                     }
                 }
             } catch (e: Exception) {
@@ -48,7 +45,7 @@ class AgentAccessibilityService : AccessibilityService() {
         }
     }
 
-    private val dumpRunnable = Runnable { dumpUi("") }
+    private val dumpRunnable = Runnable { dumpUi() }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -58,18 +55,17 @@ class AgentAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
-        val eventPackage = event.packageName?.toString() ?: ""
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                 handler.removeCallbacks(dumpRunnable)
-                dumpUi(eventPackage)
+                dumpUi()
             }
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
             AccessibilityEvent.TYPE_VIEW_CLICKED,
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
                 if (!handler.hasCallbacks(dumpRunnable)) {
-                    handler.postDelayed({ dumpUi(eventPackage) }, 150)
+                    handler.postDelayed({ dumpUi() }, 150)
                 }
             }
         }
@@ -85,24 +81,38 @@ class AgentAccessibilityService : AccessibilityService() {
 
     private fun dumpUi(preferredPackage: String = "") {
         try {
-            var selectedRoot: AccessibilityNodeInfo? = null
-            if (preferredPackage.isNotEmpty()) {
-                for (window in windows) {
-                    try {
-                        val root = window.root ?: continue
-                        val pkg = root.packageName?.toString() ?: ""
-                        if (pkg == preferredPackage) {
-                            selectedRoot = AccessibilityNodeInfo.obtain(root)
-                            root.recycle()
-                            break
-                        }
+            var activeFocusedRoot: AccessibilityNodeInfo? = null
+            var activeRoot: AccessibilityNodeInfo? = null
+            var focusedRoot: AccessibilityNodeInfo? = null
+
+            for (window in windows) {
+                try {
+                    val root = window.root ?: continue
+                    val active = window.isActive
+                    val focused = window.isFocused
+
+                    if (active && focused) {
+                        activeFocusedRoot = AccessibilityNodeInfo.obtain(root)
                         root.recycle()
-                    } catch (_: Exception) {}
-                }
+                        break
+                    }
+                    if (active && activeRoot == null) {
+                        activeRoot = AccessibilityNodeInfo.obtain(root)
+                    }
+                    if (focused && focusedRoot == null) {
+                        focusedRoot = AccessibilityNodeInfo.obtain(root)
+                    }
+                    root.recycle()
+                } catch (_: Exception) {}
             }
+
+            var selectedRoot: AccessibilityNodeInfo? =
+                activeFocusedRoot ?: activeRoot ?: focusedRoot
+
             if (selectedRoot == null) {
                 selectedRoot = rootInActiveWindow
             }
+
             val root = selectedRoot ?: return
             val packageName = root.packageName?.toString() ?: ""
             val out = JSONObject().put("timestamp", System.currentTimeMillis()).put("package", packageName)
@@ -323,9 +333,7 @@ class AgentAccessibilityService : AccessibilityService() {
             val nodes = JSONArray()
             walk(root, nodes)
             nodes.toString()
-        } catch (_: Exception) {
-            ""
-        }
+        } catch (_: Exception) { "" }
     }
 
     private fun findByIndex(target: Int): AccessibilityNodeInfo? {
@@ -337,9 +345,7 @@ class AgentAccessibilityService : AccessibilityService() {
     }
 
     private fun findRecursive(node: AccessibilityNodeInfo, target: Int, counter: IntArray): AccessibilityNodeInfo? {
-        if (counter[0] == target) {
-            return AccessibilityNodeInfo.obtain(node)
-        }
+        if (counter[0] == target) return AccessibilityNodeInfo.obtain(node)
         counter[0]++
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
