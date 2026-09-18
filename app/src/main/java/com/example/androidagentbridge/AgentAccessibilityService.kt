@@ -1,6 +1,7 @@
 package com.example.androidagentbridge
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Intent
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
 import android.graphics.Rect
@@ -171,6 +172,25 @@ class AgentAccessibilityService : AccessibilityService() {
             }
             "back" -> writeResult(performGlobalAction(GLOBAL_ACTION_BACK),"back")
             "home" -> writeResult(performGlobalAction(GLOBAL_ACTION_HOME),"home")
+            "open_app" -> {
+                val packageName = cmd.optString("package", "").trim()
+                if (packageName.isEmpty()) {
+                    writeResult(false, "missing package")
+                } else {
+                    try {
+                        val intent = packageManager.getLaunchIntentForPackage(packageName)
+                        if (intent == null) {
+                            writeResult(false, "no launcher activity: $packageName")
+                        } else {
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            startActivity(intent)
+                            writeResult(true, "open_app: $packageName")
+                        }
+                    } catch (e: Exception) {
+                        writeResult(false, "open_app failed: ${e.message}")
+                    }
+                }
+            }
             else -> writeResult(false,"unknown action")
         }
         handler.postDelayed({dumpUi()},250)
