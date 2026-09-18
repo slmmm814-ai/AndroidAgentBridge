@@ -19,15 +19,27 @@ class AgentAccessibilityService : AccessibilityService() {
     private val uiFile = File("/sdcard/ui_state.json")
     private val commandFile = File("/sdcard/agent_command.json")
     private val resultFile = File("/sdcard/agent_result.json")
-    private var lastCommand = ""
     private val poller = object : Runnable {
         override fun run() {
             try {
                 if (commandFile.exists()) {
-                    val raw = commandFile.readText(Charset.forName("UTF-8")).trim()
-                    if (raw.isNotEmpty() && raw != lastCommand) { lastCommand=raw; executeCommand(JSONObject(raw)); commandFile.delete() }
+                    val raw = try {
+                        commandFile.readText(Charset.forName("UTF-8")).trim()
+                    } catch (_: Exception) { "" }
+
+                    if (raw.isNotEmpty()) {
+                        try {
+                            val command = JSONObject(raw)
+                            executeCommand(command)
+                            try { commandFile.delete() } catch (_: Exception) {}
+                        } catch (_: org.json.JSONException) {
+                            // JSON غير مكتمل، نحاول بالدورة القادمة
+                        }
+                    }
                 }
-            } catch (e: Exception) { writeResult(false, e.message ?: "error"); try { commandFile.delete() } catch (_: Exception) {} }
+            } catch (e: Exception) {
+                writeResult(false, e.message ?: "poller error")
+            }
             handler.postDelayed(this, 300)
         }
     }
