@@ -52,23 +52,27 @@ class AgentAccessibilityService : AccessibilityService() {
         if (event == null) return
 
         val eventPackage = event.packageName?.toString() ?: ""
-        val eventType = event.eventType
 
         try {
             File("/sdcard/accessibility_events.log").appendText(
-                "${System.currentTimeMillis()} type=$eventType package=$eventPackage\n",
+                "${System.currentTimeMillis()} type=${event.eventType} package=$eventPackage
+",
                 Charset.forName("UTF-8")
             )
         } catch (_: Exception) {}
 
-        when (eventType) {
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                handler.removeCallbacks(dumpRunnable)
+                dumpUi()
+            }
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
             AccessibilityEvent.TYPE_VIEW_CLICKED,
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
-                handler.removeCallbacks(dumpRunnable)
-                handler.postDelayed(dumpRunnable, 150)
+                if (!handler.hasCallbacks(dumpRunnable)) {
+                    handler.postDelayed(dumpRunnable, 150)
+                }
             }
         }
     }
