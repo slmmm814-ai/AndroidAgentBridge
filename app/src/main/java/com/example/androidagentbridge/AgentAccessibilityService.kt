@@ -80,6 +80,18 @@ class AgentAccessibilityService : AccessibilityService() {
 
     private fun dumpUi(preferredPackage: String = "") {
         try {
+            File("/sdcard/accessibility_windows.log").writeText(
+                windows.joinToString("\n") { window ->
+                    try {
+                        val root = window.root
+                        val pkg = root?.packageName?.toString() ?: ""
+                        "type=${window.type} id=${window.id} focused=${window.isFocused} active=${window.isActive} package=$pkg"
+                    } catch (e: Exception) {
+                        "ERROR ${e.message}"
+                    }
+                },
+                Charset.forName("UTF-8")
+            )
             var selectedRoot: AccessibilityNodeInfo? = null
 
             if (preferredPackage.isNotEmpty()) {
