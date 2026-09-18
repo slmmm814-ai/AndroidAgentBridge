@@ -44,7 +44,7 @@ class AgentAccessibilityService : AccessibilityService() {
         }
     }
         private val dumpRunnable = Runnable {
-        dumpUi()
+        dumpUi("")
     }
 
     override fun onServiceConnected() { super.onServiceConnected(); handler.post(poller); dumpUi() }
@@ -55,7 +55,8 @@ class AgentAccessibilityService : AccessibilityService() {
 
         try {
             File("/sdcard/accessibility_events.log").appendText(
-                "${System.currentTimeMillis()} type=${event.eventType} package=$eventPackage\n",
+                "${System.currentTimeMillis()} type=${event.eventType} package=$eventPackage
+",
                 Charset.forName("UTF-8")
             )
         } catch (_: Exception) {}
@@ -63,14 +64,14 @@ class AgentAccessibilityService : AccessibilityService() {
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                 handler.removeCallbacks(dumpRunnable)
-                dumpUi()
+                dumpUi(eventPackage)
             }
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
             AccessibilityEvent.TYPE_VIEW_CLICKED,
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
                 if (!handler.hasCallbacks(dumpRunnable)) {
-                    handler.postDelayed(dumpRunnable, 150)
+                    handler.postDelayed({ dumpUi(eventPackage) }, 150)
                 }
             }
         }
@@ -78,9 +79,30 @@ class AgentAccessibilityService : AccessibilityService() {
     override fun onInterrupt() {}
     override fun onDestroy() { handler.removeCallbacks(poller); super.onDestroy() }
 
-    private fun dumpUi() {
+    private fun dumpUi(preferredPackage: String = "") {
         try {
-            val root = rootInActiveWindow ?: return
+            var selectedRoot: AccessibilityNodeInfo? = null
+
+            if (preferredPackage.isNotEmpty()) {
+                for (window in windows) {
+                    try {
+                        val root = window.root ?: continue
+                        val pkg = root.packageName?.toString() ?: ""
+                        if (pkg == preferredPackage) {
+                            selectedRoot = AccessibilityNodeInfo.obtain(root)
+                            root.recycle()
+                            break
+                        }
+                        root.recycle()
+                    } catch (_: Exception) {}
+                }
+            }
+
+            if (selectedRoot == null) {
+                selectedRoot = rootInActiveWindow
+            }
+
+            val root = selectedRoot ?: return
             val packageName = root.packageName?.toString() ?: ""
             val out = JSONObject().put("timestamp", System.currentTimeMillis()).put("package", packageName)
             val nodes = JSONArray()
