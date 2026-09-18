@@ -50,7 +50,19 @@ class AgentAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() { super.onServiceConnected(); handler.post(poller); dumpUi() }
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
-        when (event.eventType) {
+
+        val eventPackage = event.packageName?.toString() ?: ""
+        val eventType = event.eventType
+
+        try {
+            File("/sdcard/accessibility_events.log").appendText(
+                "${System.currentTimeMillis()} type=$eventType package=$eventPackage
+",
+                Charset.forName("UTF-8")
+            )
+        } catch (_: Exception) {}
+
+        when (eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
