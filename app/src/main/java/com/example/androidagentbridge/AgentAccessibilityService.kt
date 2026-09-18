@@ -56,8 +56,7 @@ class AgentAccessibilityService : AccessibilityService() {
 
         try {
             File("/sdcard/accessibility_events.log").appendText(
-                "${System.currentTimeMillis()} type=$eventType package=$eventPackage
-",
+                "${System.currentTimeMillis()} type=$eventType package=$eventPackage\n",
                 Charset.forName("UTF-8")
             )
         } catch (_: Exception) {}
