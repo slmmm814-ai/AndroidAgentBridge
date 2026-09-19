@@ -928,7 +928,26 @@ class AgentAccessibilityService : AccessibilityService() {
             val targetClass = target.optString("class", "")
             val targetPackage = target.optString("package", "")
 
-            val root = getTargetRoot() ?: return null
+            val root = getTargetRoot()
+
+            if (root == null) {
+                File("/sdcard/type_debug.txt").writeText(
+                    "getTargetRoot() = NULL\n" +
+                    "targetPackageFromUI=$targetPackage\n" +
+                    "serviceTargetPackage=${this@AgentAccessibilityService.targetPackage}\n"
+                )
+                return null
+            }
+
+            File("/sdcard/type_debug.txt").writeText(
+                "getTargetRoot() = OK\n" +
+                "targetPackageFromUI=$targetPackage\n" +
+                "serviceTargetPackage=${this@AgentAccessibilityService.targetPackage}\n" +
+                "rootPackage=${root.packageName}\n" +
+                "rootClass=${root.className}\n" +
+                "rootChildCount=${root.childCount}\n" +
+                "rootFocused=${root.isFocused}\n"
+            )
 
             // 0. إذا كان هناك حقل إدخال مركّز، استخدمه أولًا.
             val focusedEditable = findFocusedEditable(root)
