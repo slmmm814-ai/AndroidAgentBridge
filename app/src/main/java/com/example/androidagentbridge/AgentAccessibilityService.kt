@@ -847,15 +847,23 @@ class AgentAccessibilityService : AccessibilityService() {
     }
 
     private fun executeType(cmd: JSONObject) {
-        val elementId = cmd.optInt("element_id", -1)
         val text = cmd.optString("text", "")
 
         var node: AccessibilityNodeInfo? = null
 
-        // المحاولة الأولى
-        node = findElementForType(elementId)
+        // ابحث مباشرة عن حقل الإدخال المركز حاليًا
+        val root = getTargetRoot()
 
-        // إذا لم نجد العنصر، نعيد بناء UI ثم نحاول مرة أخرى.
+        if (root != null) {
+            try {
+                node = findFocusedEditable(root)
+            } catch (_: Exception) {
+            }
+
+            root.recycle()
+        }
+
+        // محاولة ثانية بعد تحديث واجهة المستخدم
         if (node == null) {
             try {
                 dumpUi()
@@ -864,27 +872,22 @@ class AgentAccessibilityService : AccessibilityService() {
 
             SystemClock.sleep(150)
 
-            node = findElementForType(elementId)
-        }
+            val retryRoot = getTargetRoot()
 
-        // محاولة أخيرة: ابحث مباشرة عن الحقل المركز.
-        if (node == null) {
-            val root = getTargetRoot()
-
-            if (root != null) {
+            if (retryRoot != null) {
                 try {
-                    node = findFocusedEditable(root)
+                    node = findFocusedEditable(retryRoot)
                 } catch (_: Exception) {
                 }
 
-                root.recycle()
+                retryRoot.recycle()
             }
         }
 
         if (node == null) {
             writeResult(
                 false,
-                "type execution failed: target element not found"
+                "type execution failed: focused editable element not found"
             )
             return
         }
