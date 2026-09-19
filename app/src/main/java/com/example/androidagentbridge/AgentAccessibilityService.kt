@@ -294,6 +294,14 @@ class AgentAccessibilityService : AccessibilityService() {
                 executeSwipe(cmd)
             }
 
+            "scroll" -> {
+                executeScroll(cmd)
+            }
+
+            "long_press" -> {
+                executeLongPress(cmd)
+            }
+
             "back" -> {
                 targetPackage = ""
 
@@ -1257,6 +1265,175 @@ class AgentAccessibilityService : AccessibilityService() {
                 700
             )
         }
+    }
+
+    private fun executeScroll(cmd: JSONObject) {
+
+        val beforeRoot = getTargetRoot()
+
+        val beforePackage =
+            beforeRoot?.packageName?.toString() ?: ""
+
+        val beforeSignature =
+            beforeRoot?.let { uiSignature(it) } ?: ""
+
+        beforeRoot?.recycle()
+
+        val elementId = cmd.optInt("element_id", -1)
+        val direction = cmd.optString("direction", "down")
+
+        var actionStarted = false
+
+        if (elementId >= 0) {
+
+            val node = findElementForTap(elementId)
+
+            if (node != null && node.isScrollable) {
+
+                actionStarted = node.performAction(
+                    if (direction == "up" || direction == "left") {
+                        AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                    } else {
+                        AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                    }
+                )
+            }
+
+            node?.recycle()
+        }
+
+        if (!actionStarted) {
+
+            // fallback: إيماءة سحب عامة عبر منطقة الشاشة
+            val metrics = resources.displayMetrics
+            val width = metrics.widthPixels.toFloat()
+            val height = metrics.heightPixels.toFloat()
+
+            val coords = when (direction) {
+                "up" -> listOf(width / 2f, height * 0.3f, width / 2f, height * 0.7f)
+                "down" -> listOf(width / 2f, height * 0.7f, width / 2f, height * 0.3f)
+                "left" -> listOf(width * 0.3f, height / 2f, width * 0.7f, height / 2f)
+                "right" -> listOf(width * 0.7f, height / 2f, width * 0.3f, height / 2f)
+                else -> listOf(width / 2f, height * 0.7f, width / 2f, height * 0.3f)
+            }
+
+            val (x1, y1, x2, y2) = coords
+
+            actionStarted = swipe(x1, y1, x2, y2, 400)
+        }
+
+        if (!actionStarted) {
+
+            writeResult(
+                false,
+                "scroll execution failed"
+            )
+
+            return
+        }
+
+        handler.postDelayed(
+            {
+                verifyTap(
+                    beforePackage,
+                    beforeSignature
+                )
+            },
+            500
+        )
+    }
+
+    private fun executeLongPress(cmd: JSONObject) {
+
+        val beforeRoot = getTargetRoot()
+
+        val beforePackage =
+            beforeRoot?.packageName?.toString() ?: ""
+
+        val beforeSignature =
+            beforeRoot?.let { uiSignature(it) } ?: ""
+
+        beforeRoot?.recycle()
+
+        val elementId = cmd.optInt("element_id", -1)
+
+        var node: AccessibilityNodeInfo? = null
+        var actionStarted = false
+
+        if (elementId >= 0) {
+
+            node = findElementForTap(elementId)
+
+            if (
+                node != null &&
+                node.isEnabled &&
+                node.isLongClickable
+            ) {
+                actionStarted = node.performAction(
+                    AccessibilityNodeInfo.ACTION_LONG_CLICK
+                )
+            }
+        }
+
+        node?.recycle()
+
+        if (!actionStarted && elementId >= 0) {
+
+            val center = getElementCenterFromUiState(elementId)
+
+            if (center != null) {
+                actionStarted = longPress(center.first, center.second)
+            }
+        }
+
+        if (!actionStarted) {
+
+            val x = cmd.optDouble("x", -1.0).toFloat()
+            val y = cmd.optDouble("y", -1.0).toFloat()
+
+            if (x >= 0 && y >= 0) {
+                actionStarted = longPress(x, y)
+            }
+        }
+
+        if (!actionStarted) {
+
+            writeResult(
+                false,
+                "long_press execution failed"
+            )
+
+            return
+        }
+
+        handler.postDelayed(
+            {
+                verifyTap(
+                    beforePackage,
+                    beforeSignature
+                )
+            },
+            700
+        )
+    }
+
+    private fun longPress(x: Float, y: Float): Boolean {
+
+        if (x < 0 || y < 0) {
+            return false
+        }
+
+        val path = Path().apply { moveTo(x, y) }
+
+        return dispatchGesture(
+            GestureDescription.Builder()
+                .addStroke(
+                    GestureDescription.StrokeDescription(path, 0, 600)
+                )
+                .build(),
+            null,
+            null
+        )
     }
 
     private fun executeOpenApp(
