@@ -1430,13 +1430,62 @@ class AgentAccessibilityService : AccessibilityService() {
 
         handler.postDelayed(
             {
-                verifyTap(
+                verifyLongPress(
                     beforePackage,
                     beforeSignature
                 )
             },
             700
         )
+    }
+
+    private fun verifyLongPress(
+        beforePackage: String,
+        beforeSignature: String
+    ) {
+        try {
+            val root =
+                getTargetRoot()
+                    ?: rootInActiveWindow
+
+            if (root == null) {
+                writeResult(
+                    false,
+                    "long_press verification failed: no active root"
+                )
+                return
+            }
+
+            val afterPackage =
+                root.packageName?.toString() ?: ""
+
+            val afterSignature =
+                uiSignature(root)
+
+            val changed =
+                afterPackage != beforePackage ||
+                    afterSignature != beforeSignature
+
+            if (changed) {
+                writeResult(
+                    true,
+                    "long_press verified"
+                )
+            } else {
+                writeResult(
+                    false,
+                    "long_press not verified: UI did not change"
+                )
+            }
+
+            root.recycle()
+
+        } catch (e: Exception) {
+            writeResult(
+                false,
+                "long_press verification failed: ${e.message}"
+            )
+        }
     }
 
     private fun longPress(x: Float, y: Float): Boolean {
