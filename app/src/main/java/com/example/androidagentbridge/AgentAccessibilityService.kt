@@ -1379,10 +1379,32 @@ class AgentAccessibilityService : AccessibilityService() {
 
         if (!actionStarted && elementId >= 0) {
 
-            val center = getElementCenterFromUiState(elementId)
+            // إعادة قراءة العنصر من شجرة Accessibility الحديثة
+            // قبل تنفيذ الإيماءة، بدل الاعتماد على bounds قديمة.
+            val freshNode = findElementForTap(elementId)
 
-            if (center != null) {
-                actionStarted = longPress(center.first, center.second)
+            if (freshNode != null) {
+
+                val rect = Rect()
+
+                freshNode.getBoundsInScreen(rect)
+
+                if (
+                    !rect.isEmpty &&
+                    rect.width() > 0 &&
+                    rect.height() > 0
+                ) {
+                    val centerX = rect.centerX().toFloat()
+                    val centerY = rect.centerY().toFloat()
+
+                    actionStarted =
+                        longPress(
+                            centerX,
+                            centerY
+                        )
+                }
+
+                freshNode.recycle()
             }
         }
 
@@ -1428,7 +1450,7 @@ class AgentAccessibilityService : AccessibilityService() {
         return dispatchGesture(
             GestureDescription.Builder()
                 .addStroke(
-                    GestureDescription.StrokeDescription(path, 0, 600)
+                    GestureDescription.StrokeDescription(path, 0, 1000)
                 )
                 .build(),
             null,
