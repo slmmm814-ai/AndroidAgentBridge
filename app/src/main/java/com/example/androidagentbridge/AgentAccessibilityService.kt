@@ -873,6 +873,34 @@ class AgentAccessibilityService : AccessibilityService() {
         }, 700)
     }
 
+    private fun findFocusedEditable(
+        node: AccessibilityNodeInfo
+    ): AccessibilityNodeInfo? {
+
+        val isEditable =
+            node.isEditable ||
+            node.className?.toString()
+                ?.contains("EditText", ignoreCase = true) == true
+
+        if (isEditable && node.isEnabled && node.isFocused) {
+            return AccessibilityNodeInfo.obtain(node)
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+
+            val found = findFocusedEditable(child)
+
+            child.recycle()
+
+            if (found != null) {
+                return found
+            }
+        }
+
+        return null
+    }
+
     private fun findElementForType(
         elementId: Int
     ): AccessibilityNodeInfo? {
@@ -901,6 +929,13 @@ class AgentAccessibilityService : AccessibilityService() {
             val targetPackage = target.optString("package", "")
 
             val root = getTargetRoot() ?: return null
+
+            // 0. إذا كان هناك حقل إدخال مركّز، استخدمه أولًا.
+            val focusedEditable = findFocusedEditable(root)
+
+            if (focusedEditable != null) {
+                return focusedEditable
+            }
 
             try {
                 val currentPackage =
