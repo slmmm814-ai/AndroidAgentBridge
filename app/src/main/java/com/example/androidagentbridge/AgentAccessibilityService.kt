@@ -1334,13 +1334,62 @@ class AgentAccessibilityService : AccessibilityService() {
 
         handler.postDelayed(
             {
-                verifyTap(
+                verifyScroll(
                     beforePackage,
                     beforeSignature
                 )
             },
             500
         )
+    }
+
+    private fun verifyScroll(
+        beforePackage: String,
+        beforeSignature: String
+    ) {
+        try {
+            val root =
+                getTargetRoot()
+                    ?: rootInActiveWindow
+
+            if (root == null) {
+                writeResult(
+                    false,
+                    "scroll verification failed: no active root"
+                )
+                return
+            }
+
+            val afterPackage =
+                root.packageName?.toString() ?: ""
+
+            val afterSignature =
+                uiSignature(root)
+
+            val changed =
+                afterPackage != beforePackage ||
+                    afterSignature != beforeSignature
+
+            if (changed) {
+                writeResult(
+                    true,
+                    "scroll verified"
+                )
+            } else {
+                writeResult(
+                    false,
+                    "scroll not verified: UI did not change"
+                )
+            }
+
+            root.recycle()
+
+        } catch (e: Exception) {
+            writeResult(
+                false,
+                "scroll verification failed: ${e.message}"
+            )
+        }
     }
 
     private fun executeLongPress(cmd: JSONObject) {
