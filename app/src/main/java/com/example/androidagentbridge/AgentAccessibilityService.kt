@@ -762,6 +762,73 @@ class AgentAccessibilityService : AccessibilityService() {
         return null
     }
 
+    private fun getTargetRoot(): AccessibilityNodeInfo? {
+        val lockedPackage = targetPackage
+
+        if (lockedPackage.isNotEmpty()) {
+            var activeFocused: AccessibilityNodeInfo? = null
+            var active: AccessibilityNodeInfo? = null
+            var focused: AccessibilityNodeInfo? = null
+            var anyMatch: AccessibilityNodeInfo? = null
+
+            for (window in windows) {
+                try {
+                    val root = window.root ?: continue
+                    val pkg = root.packageName?.toString() ?: ""
+
+                    if (pkg != lockedPackage) {
+                        root.recycle()
+                        continue
+                    }
+
+                    if (anyMatch == null) {
+                        anyMatch = AccessibilityNodeInfo.obtain(root)
+                    }
+
+                    if (window.isActive && window.isFocused) {
+                        activeFocused = AccessibilityNodeInfo.obtain(root)
+                        root.recycle()
+                        break
+                    }
+
+                    if (window.isActive && active == null) {
+                        active = AccessibilityNodeInfo.obtain(root)
+                    }
+
+                    if (window.isFocused && focused == null) {
+                        focused = AccessibilityNodeInfo.obtain(root)
+                    }
+
+                    root.recycle()
+
+                } catch (_: Exception) {
+                }
+            }
+
+            activeFocused?.let {
+                active?.recycle()
+                focused?.recycle()
+                anyMatch?.recycle()
+                return it
+            }
+
+            active?.let {
+                focused?.recycle()
+                anyMatch?.recycle()
+                return it
+            }
+
+            focused?.let {
+                anyMatch?.recycle()
+                return it
+            }
+
+            return anyMatch
+        }
+
+        return rootInActiveWindow
+    }
+
     private fun executeType(cmd: JSONObject) {
         val elementId = cmd.optInt("element_id", -1)
         val text = cmd.optString("text", "")
@@ -834,7 +901,7 @@ class AgentAccessibilityService : AccessibilityService() {
             val targetClass = target.optString("class", "")
             val targetPackage = target.optString("package", "")
 
-            val root = rootInActiveWindow ?: return null
+            val root = getTargetRoot() ?: return null
 
             try {
                 val currentPackage =
@@ -965,7 +1032,7 @@ class AgentAccessibilityService : AccessibilityService() {
         target: Int
     ): AccessibilityNodeInfo? {
 
-        val root = rootInActiveWindow ?: return null
+        val root = getTargetRoot() ?: return null
 
         val found = findEditableByIndexFromRoot(
             root,
