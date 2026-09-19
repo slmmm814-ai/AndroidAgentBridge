@@ -1371,8 +1371,12 @@ class AgentAccessibilityService : AccessibilityService() {
 
         try {
 
+            // محاولة أولى عبر getTargetRoot، وإذا فشلت (مثلاً بسبب
+            // تحوّل مؤقت في قائمة النوافذ عند ظهور لوحة المفاتيح)
+            // نرجع إلى rootInActiveWindow كخيار أخير بدل الفشل الفوري.
             val root =
                 getTargetRoot()
+                    ?: rootInActiveWindow
 
             if (root == null) {
 
