@@ -8,6 +8,7 @@ import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
@@ -378,6 +379,19 @@ class AgentAccessibilityService : AccessibilityService() {
 
         node?.recycle()
 
+        /*
+         * IMPORTANT:
+         *
+         * If AccessibilityNodeInfo lookup/action failed,
+         * use the bounds stored in ui_state.json.
+         *
+         * This makes:
+         *
+         * {"action":"tap","element_id":16}
+         *
+         * work even if the live accessibility node cannot
+         * be matched directly.
+         */
         if (!actionStarted && elementId >= 0) {
 
             val center =
@@ -389,6 +403,9 @@ class AgentAccessibilityService : AccessibilityService() {
             }
         }
 
+        /*
+         * Explicit coordinate fallback.
+         */
         if (!actionStarted) {
 
             val x =
@@ -833,38 +850,83 @@ class AgentAccessibilityService : AccessibilityService() {
         val elementId = cmd.optInt("element_id", -1)
         val text = cmd.optString("text", "")
 
-        var node = findElementForType(elementId)
+        var node: AccessibilityNodeInfo? = null
+
+        // المحاولة الأولى
+        node = findElementForType(elementId)
+
+        // إذا لم نجد العنصر، نعيد بناء UI ثم نحاول مرة أخرى.
+        if (node == null) {
+            try {
+                dumpUi()
+            } catch (_: Exception) {
+            }
+
+            SystemClock.sleep(150)
+
+            node = findElementForType(elementId)
+        }
+
+        // محاولة أخيرة: ابحث مباشرة عن الحقل المركز.
+        if (node == null) {
+            val root = getTargetRoot()
+
+            if (root != null) {
+                try {
+                    node = findFocusedEditable(root)
+                } catch (_: Exception) {
+                }
+
+                root.recycle()
+            }
+        }
 
         if (node == null) {
-            writeResult(false, "type execution failed: target element not found")
+            writeResult(
+                false,
+                "type execution failed: target element not found"
+            )
             return
         }
 
         val editable =
             node.isEditable ||
-            node.className?.toString()?.contains("EditText", ignoreCase = true) == true
+            node.className?.toString()
+                ?.contains("EditText", ignoreCase = true) == true
 
         if (!editable) {
             node.recycle()
-            writeResult(false, "type execution failed: target is not editable")
+
+            writeResult(
+                false,
+                "type execution failed: target is not editable"
+            )
             return
         }
 
-        val actionStarted = node.performAction(
-            AccessibilityNodeInfo.ACTION_SET_TEXT,
-            Bundle().apply {
-                putCharSequence(
-                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                    text
-                )
-            }
-        )
+        val actionStarted = try {
+            node.performAction(
+                AccessibilityNodeInfo.ACTION_SET_TEXT,
+                Bundle().apply {
+                    putCharSequence(
+                        AccessibilityNodeInfo
+                            .ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                        text
+                    )
+                }
+            )
+        } catch (_: Exception) {
+            false
+        }
 
         node.recycle()
         node = null
 
         if (!actionStarted) {
-            writeResult(false, "type execution failed: ACTION_SET_TEXT rejected")
+            writeResult(
+                false,
+                "type execution failed: ACTION_SET_TEXT rejected"
+            )
             return
         }
 
@@ -882,14 +944,22 @@ class AgentAccessibilityService : AccessibilityService() {
             node.className?.toString()
                 ?.contains("EditText", ignoreCase = true) == true
 
-        if (isEditable && node.isEnabled && node.isFocused) {
+        if (
+            node.isFocused &&
+            node.isEnabled &&
+            isEditable
+        ) {
             return AccessibilityNodeInfo.obtain(node)
         }
 
         for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
 
-            val found = findFocusedEditable(child)
+            val child =
+                node.getChild(i)
+                    ?: continue
+
+            val found =
+                findFocusedEditable(child)
 
             child.recycle()
 
@@ -904,8 +974,9 @@ class AgentAccessibilityService : AccessibilityService() {
     private fun findElementForType(
         elementId: Int
     ): AccessibilityNodeInfo? {
+
         if (!uiFile.exists()) {
-            return null
+            return findEditableByIndex(elementId)
         }
 
         return try {
@@ -914,7 +985,7 @@ class AgentAccessibilityService : AccessibilityService() {
             )
 
             val elements = state.optJSONArray("elements")
-                ?: return null
+                ?: return findEditableByIndex(elementId)
 
             if (elementId < 0 || elementId >= elements.length()) {
                 return null
@@ -928,33 +999,7 @@ class AgentAccessibilityService : AccessibilityService() {
             val targetClass = target.optString("class", "")
             val targetPackage = target.optString("package", "")
 
-            val root = getTargetRoot()
-
-            if (root == null) {
-                File("/sdcard/type_debug.txt").writeText(
-                    "getTargetRoot() = NULL\n" +
-                    "targetPackageFromUI=$targetPackage\n" +
-                    "serviceTargetPackage=${this@AgentAccessibilityService.targetPackage}\n"
-                )
-                return null
-            }
-
-            File("/sdcard/type_debug.txt").writeText(
-                "getTargetRoot() = OK\n" +
-                "targetPackageFromUI=$targetPackage\n" +
-                "serviceTargetPackage=${this@AgentAccessibilityService.targetPackage}\n" +
-                "rootPackage=${root.packageName}\n" +
-                "rootClass=${root.className}\n" +
-                "rootChildCount=${root.childCount}\n" +
-                "rootFocused=${root.isFocused}\n"
-            )
-
-            // 0. إذا كان هناك حقل إدخال مركّز، استخدمه أولًا.
-            val focusedEditable = findFocusedEditable(root)
-
-            if (focusedEditable != null) {
-                return focusedEditable
-            }
+            val root = getTargetRoot() ?: return null
 
             try {
                 val currentPackage =
@@ -967,6 +1012,7 @@ class AgentAccessibilityService : AccessibilityService() {
                     return null
                 }
 
+                // 1. resource_id
                 if (targetResource.isNotEmpty()) {
                     val found = findEditableMatching(
                         root,
@@ -982,6 +1028,7 @@ class AgentAccessibilityService : AccessibilityService() {
                     }
                 }
 
+                // 2. content description
                 if (targetDesc.isNotEmpty()) {
                     val found = findEditableMatching(
                         root,
@@ -997,6 +1044,7 @@ class AgentAccessibilityService : AccessibilityService() {
                     }
                 }
 
+                // 3. text
                 if (targetText.isNotEmpty()) {
                     val found = findEditableMatching(
                         root,
@@ -1012,78 +1060,16 @@ class AgentAccessibilityService : AccessibilityService() {
                     }
                 }
 
-                val foundById = findNodeByTraversalIndex(
-                    root,
-                    elementId
-                )
-
-                if (foundById != null) {
-                    val editable =
-                        foundById.isEditable ||
-                        foundById.className?.toString()
-                            ?.contains("EditText", ignoreCase = true) == true
-
-                    if (editable && foundById.isEnabled) {
-                        return foundById
-                    }
-
-                    foundById.recycle()
-                }
-
-                return null
+                // 4. fallback إلى العنصر الحالي بنفس index
+                return findEditableByIndexFromRoot(root, elementId)
 
             } finally {
                 root.recycle()
             }
 
         } catch (_: Exception) {
-            return null
+            return findEditableByIndex(elementId)
         }
-    }
-
-    private fun findNodeByTraversalIndex(
-        root: AccessibilityNodeInfo,
-        target: Int
-    ): AccessibilityNodeInfo? {
-        val counter = intArrayOf(0)
-        return findNodeByTraversalIndexRecursive(
-            root,
-            target,
-            counter
-        )
-    }
-
-    private fun findNodeByTraversalIndexRecursive(
-        node: AccessibilityNodeInfo,
-        target: Int,
-        counter: IntArray
-    ): AccessibilityNodeInfo? {
-
-        val currentId = counter[0]
-
-        if (currentId == target) {
-            return AccessibilityNodeInfo.obtain(node)
-        }
-
-        counter[0]++
-
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-
-            val found = findNodeByTraversalIndexRecursive(
-                child,
-                target,
-                counter
-            )
-
-            child.recycle()
-
-            if (found != null) {
-                return found
-            }
-        }
-
-        return null
     }
 
     private fun findEditableMatching(
