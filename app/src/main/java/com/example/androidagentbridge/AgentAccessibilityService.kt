@@ -762,55 +762,271 @@ class AgentAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun executeType(
-        cmd: JSONObject
-    ) {
+    private fun executeType(cmd: JSONObject) {
+        val elementId = cmd.optInt("element_id", -1)
+        val text = cmd.optString("text", "")
 
-        val elementId =
-            cmd.optInt(
-                "element_id",
-                -1
-            )
+        var node = findElementForType(elementId)
 
-        val text =
-            cmd.optString(
-                "text",
-                ""
-            )
+        if (node == null) {
+            writeResult(false, "type execution failed: target element not found")
+            return
+        }
 
-        val node =
-            findByIndex(elementId)
+        val editable =
+            node.isEditable ||
+            node.className?.toString()?.contains("EditText", ignoreCase = true) == true
 
-        val actionStarted =
-            node?.performAction(
-                AccessibilityNodeInfo.ACTION_SET_TEXT,
-                Bundle().apply {
-                    putCharSequence(
-                        AccessibilityNodeInfo
-                            .ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                        text
-                    )
-                }
-            ) ?: false
+        if (!editable) {
+            node.recycle()
+            writeResult(false, "type execution failed: target is not editable")
+            return
+        }
 
-        node?.recycle()
+        val actionStarted = node.performAction(
+            AccessibilityNodeInfo.ACTION_SET_TEXT,
+            Bundle().apply {
+                putCharSequence(
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                    text
+                )
+            }
+        )
+
+        node.recycle()
+        node = null
 
         if (!actionStarted) {
-
-            writeResult(
-                false,
-                "type execution failed"
-            )
-
-        } else {
-
-            handler.postDelayed(
-                {
-                    verifyType(text)
-                },
-                700
-            )
+            writeResult(false, "type execution failed: ACTION_SET_TEXT rejected")
+            return
         }
+
+        handler.postDelayed({
+            verifyType(text)
+        }, 700)
+    }
+
+    private fun findElementForType(
+        elementId: Int
+    ): AccessibilityNodeInfo? {
+
+        if (!uiFile.exists()) {
+            return findEditableByIndex(elementId)
+        }
+
+        return try {
+            val state = JSONObject(
+                uiFile.readText(Charset.forName("UTF-8"))
+            )
+
+            val elements = state.optJSONArray("elements")
+                ?: return findEditableByIndex(elementId)
+
+            if (elementId < 0 || elementId >= elements.length()) {
+                return null
+            }
+
+            val target = elements.getJSONObject(elementId)
+
+            val targetText = target.optString("text", "")
+            val targetDesc = target.optString("content_desc", "")
+            val targetResource = target.optString("resource_id", "")
+            val targetClass = target.optString("class", "")
+            val targetPackage = target.optString("package", "")
+
+            val root = rootInActiveWindow ?: return null
+
+            try {
+                val currentPackage =
+                    root.packageName?.toString() ?: ""
+
+                if (
+                    targetPackage.isNotEmpty() &&
+                    currentPackage != targetPackage
+                ) {
+                    return null
+                }
+
+                if (targetResource.isNotEmpty()) {
+                    val found = findEditableMatching(
+                        root,
+                        targetResource,
+                        targetText,
+                        targetDesc,
+                        targetClass,
+                        MatchMode.RESOURCE
+                    )
+
+                    if (found != null) {
+                        return found
+                    }
+                }
+
+                if (targetDesc.isNotEmpty()) {
+                    val found = findEditableMatching(
+                        root,
+                        targetResource,
+                        targetText,
+                        targetDesc,
+                        targetClass,
+                        MatchMode.CONTENT_DESC
+                    )
+
+                    if (found != null) {
+                        return found
+                    }
+                }
+
+                if (targetText.isNotEmpty()) {
+                    val found = findEditableMatching(
+                        root,
+                        targetResource,
+                        targetText,
+                        targetDesc,
+                        targetClass,
+                        MatchMode.TEXT
+                    )
+
+                    if (found != null) {
+                        return found
+                    }
+                }
+
+                return findEditableByIndexFromRoot(root, elementId)
+
+            } finally {
+                root.recycle()
+            }
+
+        } catch (_: Exception) {
+            return findEditableByIndex(elementId)
+        }
+    }
+
+    private fun findEditableMatching(
+        node: AccessibilityNodeInfo,
+        resourceId: String,
+        text: String,
+        contentDesc: String,
+        className: String,
+        mode: MatchMode
+    ): AccessibilityNodeInfo? {
+
+        val nodeResource = node.viewIdResourceName ?: ""
+        val nodeText = node.text?.toString() ?: ""
+        val nodeDesc = node.contentDescription?.toString() ?: ""
+        val nodeClass = node.className?.toString() ?: ""
+
+        val matches = when (mode) {
+            MatchMode.RESOURCE ->
+                nodeResource == resourceId &&
+                classNameMatches(nodeClass, className)
+
+            MatchMode.CONTENT_DESC ->
+                nodeDesc == contentDesc &&
+                classNameMatches(nodeClass, className)
+
+            MatchMode.TEXT ->
+                nodeText == text &&
+                classNameMatches(nodeClass, className)
+        }
+
+        val editable =
+            node.isEditable ||
+            nodeClass.contains("EditText", ignoreCase = true)
+
+        if (matches && node.isEnabled && editable) {
+            return AccessibilityNodeInfo.obtain(node)
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+
+            val found = findEditableMatching(
+                child,
+                resourceId,
+                text,
+                contentDesc,
+                className,
+                mode
+            )
+
+            child.recycle()
+
+            if (found != null) {
+                return found
+            }
+        }
+
+        return null
+    }
+
+    private fun findEditableByIndex(
+        target: Int
+    ): AccessibilityNodeInfo? {
+
+        val root = rootInActiveWindow ?: return null
+
+        val found = findEditableByIndexFromRoot(
+            root,
+            target
+        )
+
+        root.recycle()
+
+        return found
+    }
+
+    private fun findEditableByIndexFromRoot(
+        root: AccessibilityNodeInfo,
+        target: Int
+    ): AccessibilityNodeInfo? {
+
+        val counter = intArrayOf(0)
+
+        return findEditableRecursive(
+            root,
+            target,
+            counter
+        )
+    }
+
+    private fun findEditableRecursive(
+        node: AccessibilityNodeInfo,
+        target: Int,
+        counter: IntArray
+    ): AccessibilityNodeInfo? {
+
+        val currentId = counter[0]
+
+        val editable =
+            node.isEditable ||
+            node.className?.toString()
+                ?.contains("EditText", ignoreCase = true) == true
+
+        if (currentId == target && editable) {
+            return AccessibilityNodeInfo.obtain(node)
+        }
+
+        counter[0]++
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+
+            val found = findEditableRecursive(
+                child,
+                target,
+                counter
+            )
+
+            child.recycle()
+
+            if (found != null) {
+                return found
+            }
+        }
+
+        return null
     }
 
     private fun executeSwipe(
