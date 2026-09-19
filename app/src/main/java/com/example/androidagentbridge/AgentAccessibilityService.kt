@@ -23,6 +23,9 @@ class AgentAccessibilityService : AccessibilityService() {
     private val commandFile = File("/sdcard/agent_command.json")
     private val resultFile = File("/sdcard/agent_result.json")
 
+    @Volatile
+    private var targetPackage: String = ""
+
     private val poller = object : Runnable {
         override fun run() {
             try {
@@ -65,7 +68,7 @@ class AgentAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_VIEW_CLICKED,
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
                 if (!handler.hasCallbacks(dumpRunnable)) {
-                    handler.postDelayed({ dumpUi() }, 150)
+                    handler.postDelayed(dumpRunnable, 150)
                 }
             }
         }
@@ -81,46 +84,85 @@ class AgentAccessibilityService : AccessibilityService() {
 
     private fun dumpUi(preferredPackage: String = "") {
         try {
+            val lockedPackage = targetPackage
+
+            if (lockedPackage.isNotEmpty()) {
+                val activeRoot = rootInActiveWindow
+                if (activeRoot != null) {
+                    val activePackage = activeRoot.packageName?.toString() ?: ""
+                    if (activePackage == lockedPackage) {
+                        writeUiRoot(activeRoot)
+                        activeRoot.recycle()
+                        return
+                    }
+                    activeRoot.recycle()
+                }
+            }
+
             var activeFocusedRoot: AccessibilityNodeInfo? = null
-            var activeRoot: AccessibilityNodeInfo? = null
+            var activeRoot2: AccessibilityNodeInfo? = null
             var focusedRoot: AccessibilityNodeInfo? = null
+            var preferredRoot: AccessibilityNodeInfo? = null
 
             for (window in windows) {
                 try {
                     val root = window.root ?: continue
-                    val active = window.isActive
-                    val focused = window.isFocused
+                    val pkg = root.packageName?.toString() ?: ""
 
-                    if (active && focused) {
+                    if (lockedPackage.isNotEmpty() && pkg != lockedPackage) {
+                        root.recycle()
+                        continue
+                    }
+
+                    if (preferredPackage.isNotEmpty() && pkg == preferredPackage && preferredRoot == null) {
+                        preferredRoot = AccessibilityNodeInfo.obtain(root)
+                    }
+
+                    if (window.isActive && window.isFocused) {
                         activeFocusedRoot = AccessibilityNodeInfo.obtain(root)
                         root.recycle()
                         break
                     }
-                    if (active && activeRoot == null) {
-                        activeRoot = AccessibilityNodeInfo.obtain(root)
+                    if (window.isActive && activeRoot2 == null) {
+                        activeRoot2 = AccessibilityNodeInfo.obtain(root)
                     }
-                    if (focused && focusedRoot == null) {
+                    if (window.isFocused && focusedRoot == null) {
                         focusedRoot = AccessibilityNodeInfo.obtain(root)
                     }
                     root.recycle()
                 } catch (_: Exception) {}
             }
 
-            var selectedRoot: AccessibilityNodeInfo? =
-                activeFocusedRoot ?: activeRoot ?: focusedRoot
+            val selectedRoot = preferredRoot ?: activeFocusedRoot ?: activeRoot2 ?: focusedRoot
 
-            if (selectedRoot == null) {
-                selectedRoot = rootInActiveWindow
+            if (selectedRoot != null) {
+                writeUiRoot(selectedRoot)
+                selectedRoot.recycle()
+                return
             }
 
-            val root = selectedRoot ?: return
+            if (lockedPackage.isNotEmpty()) {
+                return
+            }
+
+            val root = rootInActiveWindow ?: return
+            writeUiRoot(root)
+            root.recycle()
+        } catch (_: Exception) {}
+    }
+
+    private fun writeUiRoot(root: AccessibilityNodeInfo) {
+        try {
             val packageName = root.packageName?.toString() ?: ""
+            val lockedPackage = targetPackage
+            if (lockedPackage.isNotEmpty() && packageName != lockedPackage) {
+                return
+            }
             val out = JSONObject().put("timestamp", System.currentTimeMillis()).put("package", packageName)
             val nodes = JSONArray()
             walk(root, nodes)
             out.put("elements", nodes)
             uiFile.writeText(out.toString(2), Charset.forName("UTF-8"))
-            root.recycle()
         } catch (_: Exception) {}
     }
 
@@ -209,10 +251,12 @@ class AgentAccessibilityService : AccessibilityService() {
                 }
             }
             "back" -> {
+                targetPackage = ""
                 val ok = performGlobalAction(GLOBAL_ACTION_BACK)
                 writeResult(ok, "back")
             }
             "home" -> {
+                targetPackage = ""
                 val ok = performGlobalAction(GLOBAL_ACTION_HOME)
                 writeResult(ok, "home")
             }
@@ -222,8 +266,10 @@ class AgentAccessibilityService : AccessibilityService() {
                     writeResult(false, "missing package")
                 } else {
                     try {
+                        targetPackage = packageName
                         val intent = packageManager.getLaunchIntentForPackage(packageName)
                         if (intent == null) {
+                            targetPackage = ""
                             writeResult(false, "no launcher activity: $packageName")
                         } else {
                             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -233,17 +279,23 @@ class AgentAccessibilityService : AccessibilityService() {
                                     val root = rootInActiveWindow
                                     val currentPackage = root?.packageName?.toString() ?: ""
                                     if (currentPackage == packageName) {
+                                        if (root != null) {
+                                            writeUiRoot(root)
+                                        }
                                         writeResult(true, "open_app verified: $packageName")
                                     } else {
                                         writeResult(false, "open_app not verified: expected=$packageName current=$currentPackage")
+                                        targetPackage = ""
                                     }
                                     root?.recycle()
                                 } catch (e: Exception) {
+                                    targetPackage = ""
                                     writeResult(false, "open_app verification failed: ${e.message}")
                                 }
                             }, 1000)
                         }
                     } catch (e: Exception) {
+                        targetPackage = ""
                         writeResult(false, "open_app failed: ${e.message}")
                     }
                 }
@@ -252,7 +304,10 @@ class AgentAccessibilityService : AccessibilityService() {
                 writeResult(false, "unknown action")
             }
         }
-        handler.postDelayed({ dumpUi() }, 250)
+
+        if (cmd.optString("action") != "open_app") {
+            handler.postDelayed({ dumpUi() }, 250)
+        }
     }
 
     private fun verifyTap(beforePackage: String, beforeSignature: String) {
