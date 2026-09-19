@@ -876,9 +876,8 @@ class AgentAccessibilityService : AccessibilityService() {
     private fun findElementForType(
         elementId: Int
     ): AccessibilityNodeInfo? {
-
         if (!uiFile.exists()) {
-            return findEditableByIndex(elementId)
+            return null
         }
 
         return try {
@@ -887,7 +886,7 @@ class AgentAccessibilityService : AccessibilityService() {
             )
 
             val elements = state.optJSONArray("elements")
-                ?: return findEditableByIndex(elementId)
+                ?: return null
 
             if (elementId < 0 || elementId >= elements.length()) {
                 return null
@@ -959,15 +958,78 @@ class AgentAccessibilityService : AccessibilityService() {
                     }
                 }
 
-                return findEditableByIndexFromRoot(root, elementId)
+                val foundById = findNodeByTraversalIndex(
+                    root,
+                    elementId
+                )
+
+                if (foundById != null) {
+                    val editable =
+                        foundById.isEditable ||
+                        foundById.className?.toString()
+                            ?.contains("EditText", ignoreCase = true) == true
+
+                    if (editable && foundById.isEnabled) {
+                        return foundById
+                    }
+
+                    foundById.recycle()
+                }
+
+                return null
 
             } finally {
                 root.recycle()
             }
 
         } catch (_: Exception) {
-            return findEditableByIndex(elementId)
+            return null
         }
+    }
+
+    private fun findNodeByTraversalIndex(
+        root: AccessibilityNodeInfo,
+        target: Int
+    ): AccessibilityNodeInfo? {
+        val counter = intArrayOf(0)
+        return findNodeByTraversalIndexRecursive(
+            root,
+            target,
+            counter
+        )
+    }
+
+    private fun findNodeByTraversalIndexRecursive(
+        node: AccessibilityNodeInfo,
+        target: Int,
+        counter: IntArray
+    ): AccessibilityNodeInfo? {
+
+        val currentId = counter[0]
+
+        if (currentId == target) {
+            return AccessibilityNodeInfo.obtain(node)
+        }
+
+        counter[0]++
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+
+            val found = findNodeByTraversalIndexRecursive(
+                child,
+                target,
+                counter
+            )
+
+            child.recycle()
+
+            if (found != null) {
+                return found
+            }
+        }
+
+        return null
     }
 
     private fun findEditableMatching(
