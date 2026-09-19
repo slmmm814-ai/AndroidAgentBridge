@@ -113,11 +113,9 @@ class AgentAccessibilityService : AccessibilityService() {
                         root.recycle()
                         continue
                     }
-
                     if (preferredPackage.isNotEmpty() && pkg == preferredPackage && preferredRoot == null) {
                         preferredRoot = AccessibilityNodeInfo.obtain(root)
                     }
-
                     if (window.isActive && window.isFocused) {
                         activeFocusedRoot = AccessibilityNodeInfo.obtain(root)
                         root.recycle()
@@ -196,60 +194,9 @@ class AgentAccessibilityService : AccessibilityService() {
                 dumpUi()
                 writeResult(true, "dump")
             }
-            "tap" -> {
-                val beforeRoot = rootInActiveWindow
-                val beforePackage = beforeRoot?.packageName?.toString() ?: ""
-                val beforeSignature = beforeRoot?.let { uiSignature(it) } ?: ""
-                beforeRoot?.recycle()
-                val id = cmd.optInt("element_id", -1)
-                val node = if (id >= 0) findByIndex(id) else null
-                val actionStarted = if (node != null && node.isClickable) {
-                    node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                } else {
-                    tap(cmd.optDouble("x", -1.0).toFloat(), cmd.optDouble("y", -1.0).toFloat())
-                }
-                node?.recycle()
-                if (!actionStarted) {
-                    writeResult(false, "tap execution failed")
-                } else {
-                    handler.postDelayed({ verifyTap(beforePackage, beforeSignature) }, 700)
-                }
-            }
-            "type" -> {
-                val elementId = cmd.optInt("element_id", -1)
-                val text = cmd.optString("text", "")
-                val node = findByIndex(elementId)
-                val actionStarted = node?.performAction(
-                    AccessibilityNodeInfo.ACTION_SET_TEXT,
-                    Bundle().apply {
-                        putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-                    }
-                ) ?: false
-                node?.recycle()
-                if (!actionStarted) {
-                    writeResult(false, "type execution failed")
-                } else {
-                    handler.postDelayed({ verifyType(text) }, 700)
-                }
-            }
-            "swipe" -> {
-                val beforeRoot = rootInActiveWindow
-                val beforePackage = beforeRoot?.packageName?.toString() ?: ""
-                val beforeSignature = beforeRoot?.let { uiSignature(it) } ?: ""
-                beforeRoot?.recycle()
-                val actionStarted = swipe(
-                    cmd.optDouble("x1").toFloat(),
-                    cmd.optDouble("y1").toFloat(),
-                    cmd.optDouble("x2").toFloat(),
-                    cmd.optDouble("y2").toFloat(),
-                    cmd.optLong("duration_ms", 400)
-                )
-                if (!actionStarted) {
-                    writeResult(false, "swipe execution failed")
-                } else {
-                    handler.postDelayed({ verifySwipe(beforePackage, beforeSignature) }, 700)
-                }
-            }
+            "tap" -> executeTap(cmd)
+            "type" -> executeType(cmd)
+            "swipe" -> executeSwipe(cmd)
             "back" -> {
                 targetPackage = ""
                 val ok = performGlobalAction(GLOBAL_ACTION_BACK)
@@ -260,53 +207,228 @@ class AgentAccessibilityService : AccessibilityService() {
                 val ok = performGlobalAction(GLOBAL_ACTION_HOME)
                 writeResult(ok, "home")
             }
-            "open_app" -> {
-                val packageName = cmd.optString("package", "").trim()
-                if (packageName.isEmpty()) {
-                    writeResult(false, "missing package")
-                } else {
-                    try {
-                        targetPackage = packageName
-                        val intent = packageManager.getLaunchIntentForPackage(packageName)
-                        if (intent == null) {
-                            targetPackage = ""
-                            writeResult(false, "no launcher activity: $packageName")
-                        } else {
-                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            startActivity(intent)
-                            handler.postDelayed({
-                                try {
-                                    val root = rootInActiveWindow
-                                    val currentPackage = root?.packageName?.toString() ?: ""
-                                    if (currentPackage == packageName) {
-                                        if (root != null) {
-                                            writeUiRoot(root)
-                                        }
-                                        writeResult(true, "open_app verified: $packageName")
-                                    } else {
-                                        writeResult(false, "open_app not verified: expected=$packageName current=$currentPackage")
-                                        targetPackage = ""
-                                    }
-                                    root?.recycle()
-                                } catch (e: Exception) {
-                                    targetPackage = ""
-                                    writeResult(false, "open_app verification failed: ${e.message}")
-                                }
-                            }, 1000)
-                        }
-                    } catch (e: Exception) {
-                        targetPackage = ""
-                        writeResult(false, "open_app failed: ${e.message}")
-                    }
-                }
-            }
-            else -> {
-                writeResult(false, "unknown action")
-            }
+            "open_app" -> executeOpenApp(cmd)
+            else -> writeResult(false, "unknown action")
         }
 
         if (cmd.optString("action") != "open_app") {
             handler.postDelayed({ dumpUi() }, 250)
+        }
+    }
+
+    private fun executeTap(cmd: JSONObject) {
+        val beforeRoot = rootInActiveWindow
+        val beforePackage = beforeRoot?.packageName?.toString() ?: ""
+        val beforeSignature = beforeRoot?.let { uiSignature(it) } ?: ""
+        beforeRoot?.recycle()
+
+        val elementId = cmd.optInt("element_id", -1)
+        var node: AccessibilityNodeInfo? = null
+        if (elementId >= 0) {
+            node = findElementForTap(elementId)
+        }
+
+        val actionStarted = if (node != null && node.isClickable && node.isEnabled) {
+            node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        } else if (node != null) {
+            val parent = findClickableParent(node)
+            val ok = if (parent != null && parent.isEnabled) {
+                parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            } else {
+                false
+            }
+            parent?.recycle()
+            ok
+        } else {
+            val x = cmd.optDouble("x", -1.0).toFloat()
+            val y = cmd.optDouble("y", -1.0).toFloat()
+            tap(x, y)
+        }
+
+        node?.recycle()
+
+        if (!actionStarted) {
+            writeResult(false, "tap execution failed")
+        } else {
+            handler.postDelayed({ verifyTap(beforePackage, beforeSignature) }, 700)
+        }
+    }
+
+    private fun findElementForTap(elementId: Int): AccessibilityNodeInfo? {
+        try {
+            if (!uiFile.exists()) {
+                return findByIndex(elementId)
+            }
+            val state = JSONObject(uiFile.readText(Charset.forName("UTF-8")))
+            val elements = state.optJSONArray("elements") ?: return findByIndex(elementId)
+
+            if (elementId < 0 || elementId >= elements.length()) {
+                return null
+            }
+
+            val target = elements.getJSONObject(elementId)
+            val targetText = target.optString("text", "")
+            val targetDesc = target.optString("content_desc", "")
+            val targetResource = target.optString("resource_id", "")
+            val targetClass = target.optString("class", "")
+            val targetPkg = target.optString("package", "")
+
+            val root = rootInActiveWindow ?: return null
+            val currentPackage = root.packageName?.toString() ?: ""
+
+            if (targetPkg.isNotEmpty() && currentPackage != targetPkg) {
+                root.recycle()
+                return null
+            }
+
+            if (targetResource.isNotEmpty()) {
+                val found = findMatchingNode(root, targetResource, targetText, targetDesc, targetClass, MatchMode.RESOURCE)
+                if (found != null) { root.recycle(); return found }
+            }
+            if (targetDesc.isNotEmpty()) {
+                val found = findMatchingNode(root, targetResource, targetText, targetDesc, targetClass, MatchMode.CONTENT_DESC)
+                if (found != null) { root.recycle(); return found }
+            }
+            if (targetText.isNotEmpty()) {
+                val found = findMatchingNode(root, targetResource, targetText, targetDesc, targetClass, MatchMode.TEXT)
+                if (found != null) { root.recycle(); return found }
+            }
+
+            val found = findByIndexFromRoot(root, elementId)
+            root.recycle()
+            return found
+        } catch (_: Exception) {
+            return findByIndex(elementId)
+        }
+    }
+
+    private enum class MatchMode { RESOURCE, CONTENT_DESC, TEXT }
+
+    private fun findMatchingNode(
+        node: AccessibilityNodeInfo,
+        resourceId: String,
+        text: String,
+        contentDesc: String,
+        className: String,
+        mode: MatchMode
+    ): AccessibilityNodeInfo? {
+        val nodeResource = node.viewIdResourceName ?: ""
+        val nodeText = node.text?.toString() ?: ""
+        val nodeDesc = node.contentDescription?.toString() ?: ""
+        val nodeClass = node.className?.toString() ?: ""
+
+        val matches = when (mode) {
+            MatchMode.RESOURCE -> nodeResource == resourceId && classNameMatches(nodeClass, className)
+            MatchMode.CONTENT_DESC -> nodeDesc == contentDesc && classNameMatches(nodeClass, className)
+            MatchMode.TEXT -> nodeText == text && classNameMatches(nodeClass, className)
+        }
+
+        if (matches && node.isEnabled) {
+            return AccessibilityNodeInfo.obtain(node)
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findMatchingNode(child, resourceId, text, contentDesc, className, mode)
+            child.recycle()
+            if (found != null) return found
+        }
+        return null
+    }
+
+    private fun classNameMatches(current: String, expected: String): Boolean {
+        if (expected.isEmpty()) return true
+        return current == expected
+    }
+
+    private fun findClickableParent(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var parent = node.parent
+        while (parent != null) {
+            if (parent.isClickable && parent.isEnabled) {
+                return parent
+            }
+            val next = parent.parent
+            parent.recycle()
+            parent = next
+        }
+        return null
+    }
+
+    private fun executeType(cmd: JSONObject) {
+        val elementId = cmd.optInt("element_id", -1)
+        val text = cmd.optString("text", "")
+        val node = findByIndex(elementId)
+        val actionStarted = node?.performAction(
+            AccessibilityNodeInfo.ACTION_SET_TEXT,
+            Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            }
+        ) ?: false
+        node?.recycle()
+        if (!actionStarted) {
+            writeResult(false, "type execution failed")
+        } else {
+            handler.postDelayed({ verifyType(text) }, 700)
+        }
+    }
+
+    private fun executeSwipe(cmd: JSONObject) {
+        val beforeRoot = rootInActiveWindow
+        val beforePackage = beforeRoot?.packageName?.toString() ?: ""
+        val beforeSignature = beforeRoot?.let { uiSignature(it) } ?: ""
+        beforeRoot?.recycle()
+
+        val actionStarted = swipe(
+            cmd.optDouble("x1").toFloat(),
+            cmd.optDouble("y1").toFloat(),
+            cmd.optDouble("x2").toFloat(),
+            cmd.optDouble("y2").toFloat(),
+            cmd.optLong("duration_ms", 400)
+        )
+
+        if (!actionStarted) {
+            writeResult(false, "swipe execution failed")
+        } else {
+            handler.postDelayed({ verifySwipe(beforePackage, beforeSignature) }, 700)
+        }
+    }
+
+    private fun executeOpenApp(cmd: JSONObject) {
+        val packageName = cmd.optString("package", "").trim()
+        if (packageName.isEmpty()) {
+            writeResult(false, "missing package")
+            return
+        }
+        try {
+            targetPackage = packageName
+            val intent = packageManager.getLaunchIntentForPackage(packageName)
+            if (intent == null) {
+                targetPackage = ""
+                writeResult(false, "no launcher activity: $packageName")
+                return
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
+            handler.postDelayed({
+                try {
+                    val root = rootInActiveWindow
+                    val currentPackage = root?.packageName?.toString() ?: ""
+                    if (currentPackage == packageName) {
+                        if (root != null) writeUiRoot(root)
+                        writeResult(true, "open_app verified: $packageName")
+                    } else {
+                        writeResult(false, "open_app not verified: expected=$packageName current=$currentPackage")
+                        targetPackage = ""
+                    }
+                    root?.recycle()
+                } catch (e: Exception) {
+                    targetPackage = ""
+                    writeResult(false, "open_app verification failed: ${e.message}")
+                }
+            }, 1000)
+        } catch (e: Exception) {
+            targetPackage = ""
+            writeResult(false, "open_app failed: ${e.message}")
         }
     }
 
@@ -393,10 +515,14 @@ class AgentAccessibilityService : AccessibilityService() {
 
     private fun findByIndex(target: Int): AccessibilityNodeInfo? {
         val root = rootInActiveWindow ?: return null
-        val counter = intArrayOf(0)
-        val found = findRecursive(root, target, counter)
+        val found = findByIndexFromRoot(root, target)
         root.recycle()
         return found
+    }
+
+    private fun findByIndexFromRoot(root: AccessibilityNodeInfo, target: Int): AccessibilityNodeInfo? {
+        val counter = intArrayOf(0)
+        return findRecursive(root, target, counter)
     }
 
     private fun findRecursive(node: AccessibilityNodeInfo, target: Int, counter: IntArray): AccessibilityNodeInfo? {
