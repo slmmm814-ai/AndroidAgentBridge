@@ -324,7 +324,7 @@ class AgentAccessibilityService : AccessibilityService() {
 
     private fun executeTap(cmd: JSONObject) {
 
-        val beforeRoot = rootInActiveWindow
+        val beforeRoot = getTargetRoot()
 
         val beforePackage =
             beforeRoot?.packageName?.toString() ?: ""
@@ -573,7 +573,7 @@ class AgentAccessibilityService : AccessibilityService() {
                 )
 
             val root =
-                rootInActiveWindow
+                getTargetRoot()
                     ?: return null
 
             val currentPackage =
@@ -1372,7 +1372,7 @@ class AgentAccessibilityService : AccessibilityService() {
         try {
 
             val root =
-                rootInActiveWindow
+                getTargetRoot()
 
             if (root == null) {
 
@@ -1402,13 +1402,39 @@ class AgentAccessibilityService : AccessibilityService() {
                     "tap verified"
                 )
 
-            } else {
+                root.recycle()
+
+                return
+            }
+
+            // التحقق الدلالي: حتى لو لم تتغيّر شجرة الواجهة بشكل ملحوظ،
+            // اعتبر الضغط ناجحًا إذا أصبح هناك عنصر قابل للتحرير مُركَّز
+            // (مثال: الضغط على حقل بحث لا يغيّر الشجرة كثيرًا لكنه يفتح لوحة المفاتيح).
+            val focusedEditable =
+                try {
+                    findFocusedEditable(root)
+                } catch (_: Exception) {
+                    null
+                }
+
+            if (focusedEditable != null) {
+
+                focusedEditable.recycle()
 
                 writeResult(
-                    false,
-                    "tap not verified: UI did not change"
+                    true,
+                    "tap verified: focused editable found"
                 )
+
+                root.recycle()
+
+                return
             }
+
+            writeResult(
+                false,
+                "tap not verified: UI did not change"
+            )
 
             root.recycle()
 
