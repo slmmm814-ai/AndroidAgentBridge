@@ -27,6 +27,9 @@ class AgentAccessibilityService : AccessibilityService() {
     @Volatile
     private var targetPackage: String = ""
 
+    @Volatile
+    private var currentCommandId: String = ""
+
     private val poller = object : Runnable {
         override fun run() {
             try {
@@ -40,6 +43,10 @@ class AgentAccessibilityService : AccessibilityService() {
                     if (raw.isNotEmpty()) {
                         try {
                             val command = JSONObject(raw)
+
+                            currentCommandId =
+                                command.optString("command_id", "")
+
                             executeCommand(command)
 
                             try {
@@ -1755,6 +1762,7 @@ class AgentAccessibilityService : AccessibilityService() {
                 JSONObject()
                     .put("ok", ok)
                     .put("message", msg)
+                    .put("command_id", currentCommandId)
                     .put(
                         "timestamp",
                         System.currentTimeMillis()
