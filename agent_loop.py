@@ -85,19 +85,78 @@ def matches(element, selector):
     return True
 
 
+def _bounds_center(bounds):
+    if not bounds or len(bounds) != 4:
+        return None
+    left, top, right, bottom = bounds
+    return ((left + right) / 2.0, (top + bottom) / 2.0)
+
+
 def find_element(selector):
-    """Find an element from the CURRENT snapshot."""
+    """Find an element from the CURRENT snapshot.
+
+    Tries an exact match first (all selector keys, including bounds,
+    matching precisely). If that fails and a 'bounds' key was given,
+    falls back to the element whose bounds-center is CLOSEST to the
+    requested bounds-center among elements matching the other keys —
+    since a search-results list, for example, can shift by a few
+    pixels between the moment the AI observed it and the moment we
+    resolve the tap, and an exact-bounds requirement was causing
+    otherwise-correct taps to fail outright.
+    """
 
     state = observe()
 
     if not state:
         return None
 
-    for element in state.get("elements", []):
+    elements = state.get("elements", [])
+
+    for element in elements:
         if matches(element, selector):
             return element
 
-    return None
+    if "bounds" not in selector:
+        return None
+
+    target_center = _bounds_center(selector.get("bounds"))
+
+    if target_center is None:
+        return None
+
+    other_selector = {
+        key: value
+        for key, value in selector.items()
+        if key != "bounds"
+    }
+
+    best_element = None
+    best_distance = None
+
+    TOLERANCE_PX = 150
+
+    for element in elements:
+        if not matches(element, other_selector):
+            continue
+
+        center = _bounds_center(element.get("bounds"))
+
+        if center is None:
+            continue
+
+        distance = (
+            (center[0] - target_center[0]) ** 2
+            + (center[1] - target_center[1]) ** 2
+        ) ** 0.5
+
+        if distance > TOLERANCE_PX:
+            continue
+
+        if best_distance is None or distance < best_distance:
+            best_distance = distance
+            best_element = element
+
+    return best_element
 
 
 def find_focused_edittext():
@@ -757,13 +816,50 @@ def run_goal(goal):
         "last_action": None,
         "last_result": None,
         "last_state": None,
+        "any_action_succeeded": False,
+        "repeat_action": None,
+        "repeat_count": 0,
     }
 
     for step in range(1, MAX_STEPS + 1):
 
         print(f"\n========== STEP {step} ==========")
 
+        # Force a fresh accessibility dump before every planning
+        # decision, instead of trusting the last automatic dump.
+        # This avoids the planner reasoning over a stale snapshot
+        # (a real bug seen where ui_state.json's timestamp stayed
+        # frozen across several identical, useless planner calls).
+        previous_package = (
+            memory.get("last_state", {}) or {}
+        ).get("package")
+
+        dump_result = send({"action": "dump"})
+
+        if not dump_result.get("ok"):
+            print(
+                "WARNING: explicit dump failed:",
+                dump_result.get("message")
+            )
+
+        time.sleep(0.2)
+
         state = observe()
+
+        current_package = state.get("package") if state else None
+
+        if (
+            previous_package
+            and current_package
+            and current_package != previous_package
+        ):
+            print(
+                "NOTE: foreground app changed unexpectedly since "
+                "last step:",
+                previous_package,
+                "->",
+                current_package
+            )
 
         if state:
             print(
@@ -793,32 +889,51 @@ def run_goal(goal):
             break
 
         # -----------------------------
+        # REPEAT-ACTION GUARD
+        # -----------------------------
+        #
+        # If the planner asks for the EXACT same action three times
+        # in a row, the state clearly isn't progressing (whether due
+        # to staleness or a genuinely unproductive choice). Stop
+        # instead of burning further planner/API calls uselessly.
+
+        action_signature = json.dumps(action, sort_keys=True, ensure_ascii=False)
+
+        if action_signature == memory.get("repeat_action"):
+            memory["repeat_count"] += 1
+        else:
+            memory["repeat_action"] = action_signature
+            memory["repeat_count"] = 1
+
+        if memory["repeat_count"] >= 3:
+            print(
+                "\nREPEAT GUARD: same action requested 3 times in a row "
+                "with no progress. Stopping to avoid wasting planner calls."
+            )
+            break
+
+        # -----------------------------
         # GOAL COMPLETE
         # -----------------------------
 
         if action.get("action") == "done":
 
-            # Tool-based goals are verified when at least one
-            # tool action succeeded and its latest result is successful.
-            tool_history = [
-                item
-                for item in memory.get("history", [])
-                if item.get("action", {}).get("action") == "tool"
-            ]
+            # IMPORTANT:
+            # planner=done is NOT proof that the goal is complete.
+            # Ask the independent Goal Verifier using the current
+            # observable state.
 
-            tool_goal_verified = (
-                bool(tool_history)
-                and bool(
-                    memory.get("last_result", {}).get("ok")
-                )
+            verification_state = observe() or state
+
+            verification = AI_PLANNER.verify_goal(
+                goal,
+                verification_state,
+                memory,
             )
 
-            legacy_goal_verified = (
-                memory.get("typed")
-                and memory.get("returned")
-            )
+            print("GOAL VERIFICATION:", verification)
 
-            if tool_goal_verified or legacy_goal_verified:
+            if verification and verification.get("verified") is True:
                 print("\nGOAL VERIFIED")
                 print("\n================================")
                 print("GOAL COMPLETED")
@@ -828,9 +943,18 @@ def run_goal(goal):
 
             print(
                 "Planner returned done "
-                "but goal is not verified."
+                "but independent Goal Verifier did not verify the goal."
             )
-            break
+
+            if verification:
+                print(
+                    "VERIFIER REASON:",
+                    verification.get("reason", "")
+                )
+
+            print("REPLANNING...")
+            time.sleep(0.5)
+            continue
 
         # -----------------------------
         # EXECUTE
@@ -864,6 +988,8 @@ def run_goal(goal):
                 time.sleep(0.5)
                 continue
 
+            memory["any_action_succeeded"] = True
+
             print("\nTOOL ACTION VERIFIED")
 
             continue
@@ -878,6 +1004,9 @@ def run_goal(goal):
         memory["last_result"] = {
             "success": bool(success)
         }
+
+        if success:
+            memory["any_action_succeeded"] = True
 
         memory["history"].append({
             "step": step,

@@ -74,6 +74,45 @@ class AIPlanner:
 
         return result
 
+    def verify_goal(self, goal, state, memory):
+        """
+        Ask the configured model whether the goal is actually satisfied.
+
+        This is intentionally separate from planning:
+        an action succeeding, or the planner returning done, is NOT
+        considered proof that the goal was completed.
+
+        Returns:
+            dict with:
+                verified: bool
+                reason: str
+            or None if no model is configured / verification failed.
+        """
+        context = {
+            "request_type": "goal_verification",
+            "goal": goal,
+            "current_state": state or {},
+            "memory": {
+                "step": (memory or {}).get("step", 0),
+                "last_action": (memory or {}).get("last_action"),
+                "last_result": (memory or {}).get("last_result"),
+                "history": (memory or {}).get("history", [])[-8:],
+            },
+        }
+
+        result = self.ask_model(context)
+
+        if not isinstance(result, dict):
+            return None
+
+        if "verified" not in result:
+            return None
+
+        return {
+            "verified": result.get("verified") is True,
+            "reason": str(result.get("reason", "")),
+        }
+
     def plan(self, goal, state, memory):
         """
         Produce one validated action.
