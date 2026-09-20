@@ -1,5 +1,10 @@
 package com.example.androidagentbridge
 
+import android.graphics.Bitmap
+import android.os.Build
+import java.io.File
+import java.io.FileOutputStream
+
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Intent
@@ -302,6 +307,10 @@ class AgentAccessibilityService : AccessibilityService() {
                 executeLongPress(cmd)
             }
 
+            "screenshot" -> {
+                executeScreenshot()
+            }
+
             "back" -> {
                 targetPackage = ""
 
@@ -333,6 +342,138 @@ class AgentAccessibilityService : AccessibilityService() {
             handler.postDelayed(
                 { dumpUi() },
                 250
+            )
+        }
+    }
+
+    private fun executeScreenshot() {
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+
+            writeResult(
+                false,
+                "screenshot requires Android 11 (API 30) or newer"
+            )
+
+            return
+        }
+
+        try {
+
+            takeScreenshot(
+                android.view.Display.DEFAULT_DISPLAY,
+                mainExecutor,
+                object : TakeScreenshotCallback {
+
+                    override fun onSuccess(
+                        screenshot: ScreenshotResult
+                    ) {
+
+                        try {
+
+                            val hardwareBuffer =
+                                screenshot.hardwareBuffer
+
+                            val bitmap =
+                                Bitmap.wrapHardwareBuffer(
+                                    hardwareBuffer,
+                                    screenshot.colorSpace
+                                )
+
+                            if (bitmap == null) {
+
+                                hardwareBuffer.close()
+
+                                writeResult(
+                                    false,
+                                    "screenshot failed: bitmap is null"
+                                )
+
+                                return
+                            }
+
+                            val outputBitmap =
+                                bitmap.copy(
+                                    Bitmap.Config.ARGB_8888,
+                                    false
+                                )
+
+                            bitmap.recycle()
+                            hardwareBuffer.close()
+
+                            if (outputBitmap == null) {
+
+                                writeResult(
+                                    false,
+                                    "screenshot failed: bitmap copy is null"
+                                )
+
+                                return
+                            }
+
+                            val file =
+                                File(
+                                    "/sdcard/agent_screenshot.png"
+                                )
+
+                            FileOutputStream(file).use { stream ->
+
+                                outputBitmap.compress(
+                                    Bitmap.CompressFormat.PNG,
+                                    100,
+                                    stream
+                                )
+                            }
+
+                            outputBitmap.recycle()
+
+                            val size =
+                                file.length()
+
+                            if (
+                                file.exists() &&
+                                size > 0
+                            ) {
+
+                                writeResult(
+                                    true,
+                                    "screenshot verified: ${file.absolutePath} ($size bytes)"
+                                )
+
+                            } else {
+
+                                writeResult(
+                                    false,
+                                    "screenshot failed: output file is empty"
+                                )
+                            }
+
+                        } catch (e: Exception) {
+
+                            writeResult(
+                                false,
+                                "screenshot processing failed: ${e.message}"
+                            )
+                        }
+                    }
+
+                    override fun onFailure(
+                        errorCode: Int
+                    ) {
+
+                        writeResult(
+                            false,
+                            "screenshot failed: errorCode=$errorCode"
+                        )
+                    }
+                }
+            )
+
+        } catch (e: Exception) {
+
+            writeResult(
+                false,
+                "screenshot request failed: ${e.message}"
             )
         }
     }
