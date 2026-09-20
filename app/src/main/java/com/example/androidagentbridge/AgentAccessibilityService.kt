@@ -105,7 +105,7 @@ class AgentAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
-    private fun dumpUi(preferredPackage: String = "") {
+    private fun dumpUi(preferredPackage: String = ""): Boolean {
         try {
             val lockedPackage = targetPackage
 
@@ -119,7 +119,7 @@ class AgentAccessibilityService : AccessibilityService() {
                     if (activePackage == lockedPackage) {
                         writeUiRoot(activeRoot)
                         activeRoot.recycle()
-                        return
+                        return true
                     }
 
                     activeRoot.recycle()
@@ -180,19 +180,26 @@ class AgentAccessibilityService : AccessibilityService() {
             if (selectedRoot != null) {
                 writeUiRoot(selectedRoot)
                 selectedRoot.recycle()
-                return
+                return true
             }
 
             if (lockedPackage.isNotEmpty()) {
-                return
+                // التطبيق المقفول لم يعد له نافذة ظاهرة إطلاقًا —
+                // لا نكتب شيئًا قديمًا/خاطئًا، ونُبلغ الفشل صراحة
+                // بدل ترك ui_state.json عالقًا مع تقرير نجاح كاذب.
+                return false
             }
 
-            val root = rootInActiveWindow ?: return
+            val root = rootInActiveWindow ?: return false
 
             writeUiRoot(root)
             root.recycle()
 
-        } catch (_: Exception) {}
+            return true
+
+        } catch (_: Exception) {
+            return false
+        }
     }
 
     private fun writeUiRoot(root: AccessibilityNodeInfo) {
@@ -282,8 +289,16 @@ class AgentAccessibilityService : AccessibilityService() {
         when (cmd.optString("action")) {
 
             "dump" -> {
-                dumpUi()
-                writeResult(true, "dump")
+                val wrote = dumpUi()
+
+                if (wrote) {
+                    writeResult(true, "dump")
+                } else {
+                    writeResult(
+                        false,
+                        "dump failed: target package has no visible window"
+                    )
+                }
             }
 
             "tap" -> {
@@ -937,6 +952,25 @@ class AgentAccessibilityService : AccessibilityService() {
     private fun getTargetRoot(): AccessibilityNodeInfo? {
         val lockedPackage = targetPackage
 
+        // استخدم الجذر النشط مباشرة إذا كان من التطبيق المستهدف.
+        // هذا هو نفس المسار الذي ينجح معه dumpUi().
+        val activeRoot = rootInActiveWindow
+
+        if (activeRoot != null) {
+            val activePackage =
+                activeRoot.packageName?.toString() ?: ""
+
+            if (
+                lockedPackage.isEmpty() ||
+                activePackage == lockedPackage
+            ) {
+                return activeRoot
+            }
+
+            activeRoot.recycle()
+        }
+
+        // fallback: البحث في النوافذ إذا لم يكن rootInActiveWindow مناسبًا.
         if (lockedPackage.isNotEmpty()) {
             var activeFocused: AccessibilityNodeInfo? = null
             var active: AccessibilityNodeInfo? = null
@@ -958,7 +992,8 @@ class AgentAccessibilityService : AccessibilityService() {
                     }
 
                     if (window.isActive && window.isFocused) {
-                        activeFocused = AccessibilityNodeInfo.obtain(root)
+                        activeFocused =
+                            AccessibilityNodeInfo.obtain(root)
                         root.recycle()
                         break
                     }
@@ -972,7 +1007,6 @@ class AgentAccessibilityService : AccessibilityService() {
                     }
 
                     root.recycle()
-
                 } catch (_: Exception) {
                 }
             }
