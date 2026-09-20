@@ -2,7 +2,6 @@ package com.example.androidagentbridge
 
 import android.graphics.Bitmap
 import android.os.Build
-import java.io.File
 import java.io.FileOutputStream
 
 import android.accessibilityservice.AccessibilityService
