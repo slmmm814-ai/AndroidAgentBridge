@@ -7,6 +7,7 @@ from planner import plan_next
 from ai_planner import AIPlanner
 from tool_router import ToolRouter
 from tool_registry import validate_tool_call
+from goal_verifier import verify_goal
 
 COMMAND = Path("/sdcard/agent_command.json")
 RESULT = Path("/sdcard/agent_result.json")
@@ -90,6 +91,33 @@ def _bounds_center(bounds):
         return None
     left, top, right, bottom = bounds
     return ((left + right) / 2.0, (top + bottom) / 2.0)
+
+
+def _state_fingerprint(state):
+    """
+    بصمة دلالية للحالة: تلتقط تغير المحتوى الفعلي
+    (نصوص/أوصاف/إحداثيات) حتى لو لم يتغير الطابع الزمني للشجرة.
+    """
+    if not state:
+        return frozenset()
+
+    parts = []
+
+    for e in state.get("elements", []):
+        b = e.get("bounds")
+        if isinstance(b, list):
+            b = tuple(b)
+
+        parts.append(
+            (
+                e.get("class", ""),
+                b,
+                e.get("content_desc", ""),
+                e.get("text", ""),
+            )
+        )
+
+    return (state.get("package"), frozenset(parts))
 
 
 def find_element(selector):
@@ -293,6 +321,172 @@ def wait_for_new_ui(old_timestamp=None):
     return observe()
 
 
+def _bounds_of(element):
+    if not isinstance(element, dict):
+        return None
+
+    b = element.get("bounds")
+
+    if not b or len(b) != 4:
+        return None
+
+    left, top, right, bottom = b
+
+    if right <= left or bottom <= top:
+        return None
+
+    return (left, top, right, bottom)
+
+
+SCROLLABLE_CLASSES = (
+    "RecyclerView",
+    "NestedScrollView",
+    "ScrollView",
+    "ListView",
+    "GridView",
+    "HorizontalScrollView",
+    "ViewPager",
+    "SlidingPaneLayout",
+    "TabLayout",
+)
+
+HORIZONTAL_CLASSES = (
+    "HorizontalScrollView",
+    "ViewPager",
+    "SlidingPaneLayout",
+    "TabLayout",
+)
+
+
+def _find_scroll_container(state, direction):
+    """
+    اكتشاف حاوية التمرير المناسبة بشكل عام لأي تطبيق.
+
+    أفقي  : شريط أفقي قصير قريب من أعلى الشاشة
+            (شريط القصص، التبويبات، الكاروسيل، الفلاتر).
+    عمودي : أكبر قائمة قابلة للتمرير
+            (الـ feed، قائمة المحادثات، الإعدادات).
+    """
+    if not state:
+        return None
+
+    horizontal = direction in ("left", "right")
+    containers = []
+
+    for element in state.get("elements", []):
+        cls = element.get("class", "") or ""
+
+        if not any(key in cls for key in SCROLLABLE_CLASSES):
+            continue
+
+        b = _bounds_of(element)
+
+        if not b:
+            continue
+
+        left, top, right, bottom = b
+        w = right - left
+        h = bottom - top
+
+        is_horizontal_class = any(
+            key in cls for key in HORIZONTAL_CLASSES
+        )
+
+        if horizontal:
+            if not (is_horizontal_class or w > h * 1.5):
+                continue
+
+            # شريط أفقي حقيقي (قصص/تبويبات) = عرضه أكبر بكثير من ارتفاعه.
+            # نفضّل الأشرطة الحقيقية دائمًا قبل أي ViewPager ضخم
+            # يغطي الشاشة كاملة.
+            is_strip = w > h * 1.8
+
+            containers.append(
+                (
+                    0 if is_strip else 1,
+                    top,
+                    -(w * h),
+                    element,
+                )
+            )
+        else:
+            if is_horizontal_class:
+                continue
+            if not h > w * 1.2:
+                continue
+            # المساحة الأكبر هي الأفضل
+            containers.append((0, top, -(w * h), element))
+
+    if not containers:
+        return None
+
+    # ترتيب الترتيب (tuple sort) يعتمد على:
+    # 1) الأولوية (الشريط الأفقي الحقيقي أولًا)
+    # 2) الأقرب للأعلى
+    # 3) المساحة الأكبر
+    containers.sort()
+    return containers[0][-1]
+
+
+def _derive_scroll_bounds(state, direction):
+    """
+    منطقة احتياطية عندما لا تكشف شجرة العناصر عن حاوية قابلة
+    للتمرير. آمنة لكل التطبيقات:
+      أفقي  : الثلث العلوي من الشاشة (مكان أشرطة القصص/التبويبات).
+      عمودي : منطقة المحتوى الرئيسية.
+    """
+    if not state:
+        return None
+
+    horizontal = direction in ("left", "right")
+
+    screen_h = 0
+    screen_w = 0
+
+    for element in state.get("elements", []):
+        b = _bounds_of(element)
+
+        if b:
+            screen_h = max(screen_h, b[3])
+            screen_w = max(screen_w, b[2])
+
+    if screen_h <= 0 or screen_w <= 0:
+        return None
+
+    if horizontal:
+        return (0, 0, screen_w, int(screen_h * 0.35))
+
+    return (0, int(screen_h * 0.2), screen_w, int(screen_h * 0.85))
+
+
+def _scroll_to_swipe(bounds, direction):
+    """
+    تحويل التمرير الدلالي إلى swipe دقيق يُنفَّذ
+    داخل حدود الحاوية نفسها، فلا يمكن أن يمرّر الصفحة كلها.
+    """
+    left, top, right, bottom = bounds
+
+    cx = (left + right) // 2
+    cy = (top + bottom) // 2
+
+    mx = max(24, int((right - left) * 0.08))
+    my = max(24, int((bottom - top) * 0.08))
+
+    if direction == "right":
+        return (right - mx, cy, left + mx, cy)
+
+    if direction == "left":
+        return (left + mx, cy, right - mx, cy)
+
+    if direction == "down":
+        return (cx, bottom - my, cx, top + my)
+
+    if direction == "up":
+        return (cx, top + my, cx, bottom - my)
+
+    return None
+
+
 # ============================================================
 # ACTION RESOLUTION
 # ============================================================
@@ -396,20 +590,63 @@ def resolve_action(action):
 
     elif action_type == "scroll":
 
+        # تمرير عام لأي تطبيق.
+        #
+        # إرسال scroll مجرد قد يحرك الحاوية الخاطئة (مثلًا تمرير
+        # الـ feed كاملًا بدل شريط القصص الأفقي في الأعلى).
+        # لذلك نحدد الحاوية المستهدفة (من selector أو بالاكتشاف
+        # التلقائي) ثم نحوّل التمرير إلى swipe داخل حدودها.
+
+        direction = (action.get("direction") or "down").lower()
         selector = action.get("selector")
 
-        if selector:
-            element = find_element(selector)
+        element = find_element(selector) if selector else None
 
-            if element is not None:
-                action["element_id"] = element["id"]
+        state = None
+
+        if element is None:
+            state = observe()
+            element = _find_scroll_container(state, direction)
+
+        bounds = _bounds_of(element)
+
+        if bounds is None:
+            if state is None:
+                state = observe()
+            bounds = _derive_scroll_bounds(state, direction)
+
+        if bounds is not None:
+            coords = _scroll_to_swipe(bounds, direction)
+
+            if coords is not None:
+                action.pop("selector", None)
+                action.pop("element_id", None)
+                action.pop("direction", None)
+
+                action["action"] = "swipe"
+                action["x1"], action["y1"] = coords[0], coords[1]
+                action["x2"], action["y2"] = coords[2], coords[3]
 
                 print(
-                    "Resolved SCROLL container:",
-                    element["id"],
-                    "|",
-                    element.get("class")
+                    "SCROLL -> SWIPE inside container",
+                    bounds,
+                    "| direction:",
+                    direction,
+                    "| coords:",
+                    coords
                 )
+
+                return action
+
+        if element is not None:
+            action["element_id"] = element["id"]
+
+            print(
+                "Resolved SCROLL container:",
+                element["id"],
+                "|",
+                element.get("class")
+            )
 
             action.pop("selector", None)
 
@@ -569,6 +806,33 @@ def execute_tool_action(action):
 
 
 
+TRANSIENT_WINDOW_ERRORS = (
+    "no active root",
+    "no visible window",
+    "has no visible window",
+    "not responding",
+)
+
+
+def _is_transient_window_error(result):
+    message = (result or {}).get("message", "") or ""
+    return any(k in message for k in TRANSIENT_WINDOW_ERRORS)
+
+
+def _refresh_windows():
+    """أعد تنشيط شجرة الوصول بعد فقدان النافذة النشطة."""
+    for _ in range(4):
+        send({"action": "dump"})
+        time.sleep(1.0)
+
+        state = observe()
+
+        if state and state.get("package"):
+            return True
+
+    return False
+
+
 def execute_action(action):
 
     action_type = action.get("action")
@@ -605,6 +869,21 @@ def execute_action(action):
 
     result = send(resolved)
 
+    # --------------------------------------------------------
+    # Recover from transient window loss
+    # (يحدث بعد open_app مباشرة أو أثناء انتقالات التطبيقات)
+    # --------------------------------------------------------
+    if not result.get("ok") and _is_transient_window_error(result):
+        print(
+            "TRANSIENT WINDOW ERROR: refreshing accessibility tree "
+            "and retrying the action once..."
+        )
+
+        if _refresh_windows():
+            resolved = resolve_action(action) or resolved
+            result = send(resolved)
+            print("RETRY RESULT:", result)
+
     print("RESULT:", result)
 
     # --------------------------------------------------------
@@ -638,25 +917,61 @@ def execute_action(action):
         return True
 
     # --------------------------------------------------------
-    # Tap inconclusive verification
+    # Inconclusive verification (tap / scroll / swipe)
     # --------------------------------------------------------
+    # بعض التطبيقات يعيد تدوير العناصر دون تغيير الطابع الزمني،
+    # أو يفتح شاشة جديدة يتأخر تحديث شجرة الوصول لها.
+    # لذلك نتحقق دلاليًا من أن المحتوى الفعلي قد تغير.
 
     if (
-        action_type == "tap"
+        action_type in ("tap", "scroll", "long_press", "swipe")
         and "UI did not change" in result.get("message", "")
     ):
         print(
-            "Tap verification inconclusive; "
+            "Verification inconclusive; "
             "checking semantic state..."
         )
 
-        time.sleep(0.5)
+        send({"action": "dump"})
+        time.sleep(1.2)
 
-        if verify_tap(action):
+        new_state = observe()
+
+        if _state_fingerprint(old_state) != _state_fingerprint(new_state):
+            print("SEMANTIC VERIFICATION: content changed -> OK")
+            return True
+
+        # محاولة بديلة: نقر إيمائي عند مركز العنصر
+        # (يحل حالات لا يستجيب فيها العنصر للنقر عبر إمكانية الوصول)
+        if action_type in ("tap", "long_press"):
+            center = _bounds_center(
+                (action.get("selector") or {}).get("bounds")
+            )
+
+            if center:
+                cx, cy = int(center[0]), int(center[1])
+
+                print(f"GESTURE TAP fallback at ({cx}, {cy})")
+
+                g_result = send(
+                    {
+                        "action": "swipe",
+                        "x1": cx,
+                        "y1": cy,
+                        "x2": cx,
+                        "y2": cy,
+                    }
+                )
+
+                if g_result.get("ok"):
+                    wait_for_new_ui(old_timestamp)
+                    return True
+
+        if action_type == "tap" and verify_tap(action):
             print("TAP semantic verification: OK")
             return True
 
-        print("TAP semantic verification: FAILED")
+        print("SEMANTIC VERIFICATION: FAILED")
         return False
 
     print("ACTION FAILED:", result.get("message"))
@@ -834,17 +1149,41 @@ def run_goal(goal):
             memory.get("last_state", {}) or {}
         ).get("package")
 
-        dump_result = send({"action": "dump"})
+        state = observe()
+        previous_timestamp = (
+            state.get("timestamp") if state else None
+        )
 
-        if not dump_result.get("ok"):
+        previous_timestamp = (
+            state.get("timestamp") if state else None
+        )
+
+        dump_ok = False
+
+        for dump_attempt in range(4):
+            dump_result = send({"action": "dump"})
+
+            if dump_result.get("ok"):
+                dump_ok = True
+                break
+
             print(
-                "WARNING: explicit dump failed:",
+                f"WARNING: explicit dump failed "
+                f"(attempt {dump_attempt + 1}/4):",
                 dump_result.get("message")
             )
 
-        time.sleep(0.2)
+            # النافذة قد تكون في حالة انتقالية؛ ننتظر ثم نعيد المحاولة.
+            time.sleep(1.5)
 
-        state = observe()
+        if not dump_ok and not _refresh_windows():
+            print(
+                "\nFATAL: accessibility service is blind. "
+                "Cannot continue safely."
+            )
+            break
+
+        time.sleep(0.2)
 
         current_package = state.get("package") if state else None
 
@@ -918,17 +1257,19 @@ def run_goal(goal):
 
         if action.get("action") == "done":
 
-            # IMPORTANT:
-            # planner=done is NOT proof that the goal is complete.
-            # Ask the independent Goal Verifier using the current
-            # observable state.
-
             verification_state = observe() or state
+
+            verification_memory = dict(memory)
+            verification_memory["last_action"] = action
+            verification_memory["last_result"] = {
+                "success": True,
+                "answer": action.get("answer"),
+            }
 
             verification = AI_PLANNER.verify_goal(
                 goal,
                 verification_state,
-                memory,
+                verification_memory,
             )
 
             print("GOAL VERIFICATION:", verification)

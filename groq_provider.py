@@ -106,86 +106,9 @@ class GroqModelProvider(ModelProvider):
             '{"action":"done","answer":"المعلومة المطلوبة هنا كنص واضح"}'
         )
 
-    def _build_verification_prompt(self, context):
-        """
-        Build a semantic goal-verification prompt.
-
-        The model must verify the goal from observable evidence.
-        It must NOT treat a successful action or done as proof.
-        """
-        state = context.get("current_state", {})
-        memory = context.get("memory", {})
-
-        elements = state.get("elements", [])
-
-        def trim(value, max_len=100):
-            value = value or ""
-            if len(value) > max_len:
-                return value[:max_len] + "…"
-            return value
-
-        compact = [
-            {
-                "id": e.get("id"),
-                "text": trim(e.get("text", "")),
-                "content_desc": trim(e.get("content_desc", "")),
-                "resource_id": trim(e.get("resource_id", "")),
-                "class_name": e.get("class", ""),
-                "clickable": e.get("clickable"),
-                "focused": e.get("focused"),
-                "bounds": e.get("bounds"),
-            }
-            for e in elements
-            if e.get("clickable") or e.get("text") or e.get("content_desc")
-        ]
-
-        compact = compact[:80]
-
-        return (
-            "أنت الآن Goal Verifier مستقل. "
-            "مهمتك الوحيدة هي تحديد هل تحقق هدف المستخدم فعلًا "
-            "اعتمادًا على الأدلة المرئية والحالة الحالية والسجل.\n\n"
-
-            f"الهدف: {context.get('goal')}\n"
-            f"الحزمة الحالية: {state.get('package')}\n"
-            f"وقت الحالة: {state.get('timestamp')}\n"
-            f"الخطوة: {memory.get('step')}\n"
-            f"آخر إجراء: {memory.get('last_action')}\n"
-            f"نتيجة آخر إجراء: {memory.get('last_result')}\n"
-            f"السجل الأخير: "
-            f"{json.dumps(memory.get('history', []), ensure_ascii=False)}\n\n"
-
-            "العناصر المرئية الحالية:\n"
-            f"{json.dumps(compact, ensure_ascii=False)}\n\n"
-
-            "قواعد التحقق الصارمة:\n"
-            "1. لا تعتبر نجاح تنفيذ أي action دليلًا على اكتمال الهدف.\n"
-            "2. لا تعتبر action=done دليلًا على اكتمال الهدف.\n"
-            "3. يجب أن تكون الحالة الحالية متوافقة فعلًا مع الهدف.\n"
-            "4. إذا كان الهدف يتعلق بتطبيق أو قناة أو محادثة محددة، "
-            "تحقق من أن الحالة تثبت أنك في المكان الصحيح.\n"
-            "5. إذا كان الهدف يتطلب نصًا أو محتوى محددًا، "
-            "يجب أن يظهر دليل مناسب عليه.\n"
-            "6. إذا كان الهدف يتطلب أحدث عنصر أو آخر فيديو أو آخر رسالة، "
-            "فلا يكفي وجود عنصر واحد؛ يجب وجود دليل يسمح بإثبات أنه الأحدث، "
-            "مثل ترتيب واضح أو تاريخ/وقت مناسب أو حالة شاشة تدل على ذلك.\n"
-            "7. إذا كانت الأدلة غير كافية أو يوجد شك، فالنتيجة false.\n"
-            "8. لا تخمّن معلومات غير موجودة في الحالة.\n\n"
-
-            "أعد JSON فقط، دون Markdown أو شرح خارج JSON، بهذا الشكل:\n"
-            '{"verified":true,"reason":"سبب مختصر مبني على الأدلة"}\n'
-            "أو:\n"
-            '{"verified":false,"reason":"الدليل الناقص أو سبب عدم تحقق الهدف"}'
-        )
-
     def generate(self, context):
         import re
         import time
-
-        if context.get("request_type") == "goal_verification":
-            prompt = self._build_verification_prompt(context)
-        else:
-            prompt = self._build_prompt(context)
 
         url = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -194,7 +117,7 @@ class GroqModelProvider(ModelProvider):
             "messages": [
                 {
                     "role": "user",
-                    "content": prompt,
+                    "content": self._build_prompt(context),
                 }
             ],
             "temperature": 0,

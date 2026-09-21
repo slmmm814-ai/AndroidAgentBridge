@@ -33,6 +33,21 @@ import re
 
 APP_PACKAGES = {
     "telegram": "org.telegram.messenger",
+    "تلغرام": "org.telegram.messenger",
+    "تيليجرام": "org.telegram.messenger",
+    "instagram": "com.instagram.android",
+    "انستغرام": "com.instagram.android",
+    "إنستغرام": "com.instagram.android",
+    "whatsapp": "com.whatsapp",
+    "واتساب": "com.whatsapp",
+    "youtube": "com.google.android.youtube",
+    "يوتيوب": "com.google.android.youtube",
+    "facebook": "com.facebook.katana",
+    "فيسبوك": "com.facebook.katana",
+    "twitter": "com.twitter.android",
+    "تويتر": "com.twitter.android",
+    "settings": "com.android.settings",
+    "الإعدادات": "com.android.settings",
 }
 
 
@@ -133,6 +148,19 @@ def validate_agent_action(action):
             and bool(tool)
             and isinstance(arguments, dict)
         )
+
+    if action_type == "scroll":
+        direction = action.get("direction")
+
+        if direction is not None and direction not in (
+            "up",
+            "down",
+            "left",
+            "right",
+        ):
+            return False
+
+        return True
 
     if action_type == "swipe":
         return all(

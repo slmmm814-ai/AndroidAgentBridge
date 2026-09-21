@@ -159,6 +159,35 @@ class ToolRouter:
             "bytes": file_path.stat().st_size,
         }
 
+    def list_apps(self):
+        """
+        Ask the Android bridge (AgentAccessibilityService) to discover
+        real launchable apps via PackageManager, instead of the AI
+        guessing package names.
+
+        Imported lazily to avoid a circular import: agent_loop.py
+        imports ToolRouter, so ToolRouter cannot import agent_loop at
+        module load time.
+        """
+        import agent_loop
+
+        result = agent_loop.send({"action": "list_apps"})
+
+        if not result.get("ok"):
+            return {
+                "ok": False,
+                "error": "list_apps_failed",
+                "message": result.get("message", ""),
+            }
+
+        data = result.get("data", {})
+
+        return {
+            "ok": True,
+            "apps": data.get("apps", []),
+            "count": data.get("count", 0),
+        }
+
     def build_project(self, project_path, timeout_seconds=300):
         project_dir = self._safe_path(project_path)
 
@@ -345,6 +374,9 @@ class ToolRouter:
                 arguments.get("path", ""),
                 arguments.get("content", ""),
             )
+
+        if tool == "list_apps":
+            return self.list_apps()
 
         if tool == "build_project":
             return self.build_project(

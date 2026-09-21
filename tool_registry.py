@@ -55,6 +55,11 @@ TOOL_DEFINITIONS = {
         },
     },
 
+    "list_apps": {
+        "description": "List installed launchable apps on the device with their real display name and Android package name. Use this to discover the correct package name before calling open_app, instead of guessing it.",
+        "arguments": {},
+    },
+
     "build_project": {
         "description": "Build an Android/Gradle project inside the agent workspace. Only the standard debug APK build is allowed.",
         "arguments": {
