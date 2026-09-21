@@ -346,6 +346,10 @@ class AgentAccessibilityService : AccessibilityService() {
                 writeResult(ok, "home")
             }
 
+            "list_apps" -> {
+                executeListApps()
+            }
+
             "open_app" -> {
                 executeOpenApp(cmd)
             }
@@ -1733,6 +1737,75 @@ class AgentAccessibilityService : AccessibilityService() {
         )
     }
 
+    private fun executeListApps() {
+
+        try {
+
+            val intent = Intent(
+                Intent.ACTION_MAIN
+            ).apply {
+                addCategory(
+                    Intent.CATEGORY_LAUNCHER
+                )
+            }
+
+            val activities =
+                packageManager.queryIntentActivities(
+                    intent,
+                    0
+                )
+
+            val apps = JSONArray()
+
+            val seenPackages =
+                mutableSetOf<String>()
+
+            for (resolveInfo in activities) {
+
+                val packageName =
+                    resolveInfo.activityInfo?.packageName
+                        ?: continue
+
+                if (packageName.isEmpty()) {
+                    continue
+                }
+
+                if (!seenPackages.add(packageName)) {
+                    continue
+                }
+
+                val label =
+                    resolveInfo.loadLabel(
+                        packageManager
+                    )?.toString() ?: packageName
+
+                apps.put(
+                    JSONObject()
+                        .put("name", label)
+                        .put("package", packageName)
+                )
+            }
+
+            val data =
+                JSONObject()
+                    .put("apps", apps)
+                    .put("count", apps.length())
+
+            writeResult(
+                true,
+                "apps discovered",
+                data
+            )
+
+        } catch (e: Exception) {
+
+            writeResult(
+                false,
+                "list_apps failed: ${e.message}"
+            )
+        }
+    }
+
     private fun executeOpenApp(
         cmd: JSONObject
     ) {
@@ -2227,21 +2300,27 @@ class AgentAccessibilityService : AccessibilityService() {
 
     private fun writeResult(
         ok: Boolean,
-        msg: String
+        msg: String,
+        data: JSONObject? = null
     ) {
 
         try {
 
+            val result = JSONObject()
+                .put("ok", ok)
+                .put("message", msg)
+                .put("command_id", currentCommandId)
+                .put(
+                    "timestamp",
+                    System.currentTimeMillis()
+                )
+
+            if (data != null) {
+                result.put("data", data)
+            }
+
             resultFile.writeText(
-                JSONObject()
-                    .put("ok", ok)
-                    .put("message", msg)
-                    .put("command_id", currentCommandId)
-                    .put(
-                        "timestamp",
-                        System.currentTimeMillis()
-                    )
-                    .toString(2),
+                result.toString(2),
                 Charset.forName("UTF-8")
             )
 
